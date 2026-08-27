@@ -18,14 +18,22 @@ large feature list.
 | Language | Python 3.11+ | Fast iteration, clear subprocess and filesystem APIs, easy review |
 | CLI | `argparse` + standard library | Keeps the control flow visible and dependencies small |
 | Model client | Official `openai` Python package | Vendor-supported transport; agent logic remains local |
-| Model protocol | OpenAI-compatible tool calling | Typed calls, broadly available through compatible gateways |
+| Model protocol | Chat Completions tool calling for v1 | Typed calls and broad compatibility with OpenAI-compatible gateways |
 | Data model | `dataclasses` and typed dictionaries | Avoids hiding state transitions behind a framework |
 | Testing | `pytest` | Concise unit and integration tests |
 | Packaging | `pyproject.toml`, `src/` layout | Reproducible installation and clean imports |
 
-The provider module is intentionally narrow. It translates Sparrow's internal
-messages and tool definitions to the API format, then translates the response
-back. The rest of the code does not depend on a provider-specific response type.
+The first provider calls `client.chat.completions.create(...)`. This endpoint is
+chosen for the initial release because compatible gateways commonly implement
+its tool-calling message format. The provider module is intentionally narrow: it
+translates Sparrow's internal messages and tool definitions to the API format,
+then translates the response back. The rest of the code does not depend on a
+provider-specific response type, so a Responses API provider can be added later
+without changing the agent loop or local tools.
+
+Only custom function definitions are sent to the model. Sparrow does not enable
+provider-hosted file search, code execution, shell, or patch tools; every action
+against the workspace is dispatched and executed by code in this repository.
 
 ## 3. Components
 
@@ -158,4 +166,3 @@ No test needs a paid API call except an explicitly marked smoke test.
 Streaming output, multiple providers, automatic context summarization, token-cost
 accounting, and richer command approval policies come after the end-to-end loop.
 They will only be added when the core remains stable and demonstrable.
-
