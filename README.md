@@ -16,6 +16,10 @@ recommended-admission project assessment.
 - **Auditable:** each model decision, tool call, result, and stop reason is logged.
 - **Portable:** the model backend is isolated behind a small provider interface.
 
+The default backend is DeepSeek-V4-Pro, accessed through DeepSeek's
+OpenAI-compatible Chat Completions API. DeepSeek-V4-Flash can be selected for
+faster, lower-cost development runs without changing the agent implementation.
+
 ## Planned workflow
 
 ```text
@@ -36,4 +40,3 @@ Architecture established; implementation is in progress.
 
 See [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) for the design rationale and
 [ROADMAP.md](ROADMAP.md) for the delivery plan.
-

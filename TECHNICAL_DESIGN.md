@@ -17,19 +17,25 @@ large feature list.
 | --- | --- | --- |
 | Language | Python 3.11+ | Fast iteration, clear subprocess and filesystem APIs, easy review |
 | CLI | `argparse` + standard library | Keeps the control flow visible and dependencies small |
-| Model client | Official `openai` Python package | Vendor-supported transport; agent logic remains local |
-| Model protocol | Chat Completions tool calling for v1 | Typed calls and broad compatibility with OpenAI-compatible gateways |
+| Model client | `openai` Python package pointed at DeepSeek | Reuses a documented compatible transport; agent logic remains local |
+| Default model | `deepseek-v4-pro` (V4-Pro-0813) | Latest general DeepSeek model with thinking mode and tool calls |
+| Development model | `deepseek-v4-flash` (V4-Flash-0731) | Faster and cheaper for repeated tests |
+| Model protocol | DeepSeek Chat Completions tool calling for v1 | Typed calls supported by both selected models |
 | Data model | `dataclasses` and typed dictionaries | Avoids hiding state transitions behind a framework |
 | Testing | `pytest` | Concise unit and integration tests |
 | Packaging | `pyproject.toml`, `src/` layout | Reproducible installation and clean imports |
 
-The first provider calls `client.chat.completions.create(...)`. This endpoint is
-chosen for the initial release because compatible gateways commonly implement
-its tool-calling message format. The provider module is intentionally narrow: it
-translates Sparrow's internal messages and tool definitions to the API format,
-then translates the response back. The rest of the code does not depend on a
-provider-specific response type, so a Responses API provider can be added later
-without changing the agent loop or local tools.
+The first provider calls `client.chat.completions.create(...)` with DeepSeek's
+`https://api.deepseek.com` base URL. The provider module is intentionally narrow:
+it translates Sparrow's internal messages and tool definitions to the API
+format, then translates the response back. The rest of the code does not depend
+on a provider-specific response type, so another provider or the Responses API
+can be added later without changing the agent loop or local tools.
+
+Thinking mode is enabled with `reasoning_effort="high"`. DeepSeek requires an
+assistant message's `reasoning_content` to be preserved when a request includes
+tools, so Sparrow stores it as protocol state and returns it with every matching
+assistant/tool-call turn. It is not printed as the user-facing final answer.
 
 Only custom function definitions are sent to the model. Sparrow does not enable
 provider-hosted file search, code execution, shell, or patch tools; every action
