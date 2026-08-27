@@ -1,42 +1,39 @@
 # Sparrow Agent
 
-Sparrow Agent is a small, inspectable coding agent built from first principles.
-It asks a language model to choose actions, executes those actions locally, feeds
-the results back to the model, and repeats until the programming task is done.
+Sparrow Agent（小麻雀）是一个从零实现、便于理解和检查的编程智能体。
+它让大语言模型选择下一步操作，在本地执行该操作，将结果返回模型，
+并重复这一过程，直到完成编程任务。
 
-This repository is being developed for the 2026 NJU Software Institute
-recommended-admission project assessment.
+本项目用于 2026 年南京大学软件学院推免项目考核。
 
-## Design goals
+## 设计目标
 
-- **Understandable:** the agent loop and every tool are implemented in this repo.
-- **Safe by default:** file operations stay inside the workspace; commands have
-  time and output limits.
-- **Verifiable:** the agent is encouraged to run tests before declaring success.
-- **Auditable:** each model decision, tool call, result, and stop reason is logged.
-- **Portable:** the model backend is isolated behind a small provider interface.
+- **易于理解：** Agent 循环和所有本地工具均由本仓库自行实现。
+- **默认安全：** 文件操作不得越出工作区，命令执行受到时间和输出长度限制。
+- **可验证：** 智能体在宣布任务完成前，应主动运行相关测试。
+- **可审计：** 记录模型决策、工具调用、执行结果和终止原因。
+- **可替换：** 模型后端被隔离在简洁的 Provider 接口之后。
 
-The default backend is DeepSeek-V4-Pro, accessed through DeepSeek's
-OpenAI-compatible Chat Completions API. DeepSeek-V4-Flash can be selected for
-faster, lower-cost development runs without changing the agent implementation.
+默认后端为 DeepSeek-V4-Pro，通过 DeepSeek 兼容 OpenAI 格式的
+Chat Completions API 访问。开发阶段可切换至 DeepSeek-V4-Flash，
+以更低成本完成高频测试，无需修改 Agent 实现。
 
-## Planned workflow
+## 计划中的工作流
 
 ```text
-user task
-  -> model request with tool schemas
-  -> zero or more local tool calls
-  -> tool results appended to conversation
-  -> repeat until final answer or a hard limit is reached
+用户任务
+  -> 连同工具定义请求模型
+  -> 模型返回零个或多个本地工具调用
+  -> 将工具结果追加至对话上下文
+  -> 重复执行，直到模型返回最终答案或触发强制终止条件
 ```
 
-The first release will provide workspace listing, file reading, text search,
-patch-based editing, and bounded command execution. It will not use an agent
-framework or any API-hosted file/code-execution tool.
+首个版本将提供工作区文件列表、文件读取、文本搜索、补丁修改和
+受限命令执行能力。项目不使用任何 Agent 框架，也不调用 API 服务端托管的
+文件、Shell、代码执行或补丁工具。
 
-## Status
+## 当前状态
 
-Architecture established; implementation is in progress.
+架构已确定，核心功能实现中。
 
-See [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md) for the design rationale and
-[ROADMAP.md](ROADMAP.md) for the delivery plan.
+设计原理见 [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md)，交付计划见 [ROADMAP.md](ROADMAP.md)。

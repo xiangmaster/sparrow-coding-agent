@@ -1,38 +1,37 @@
-# Delivery Roadmap
+# 交付计划
 
-The submission deadline is 2026-09-02 24:00 China Standard Time. Scope is frozen
-around a reliable, explainable end-to-end loop.
+项目提交截止时间为 2026 年 9 月 2 日 24:00（北京时间）。
+功能范围围绕“稳定、可解释的端到端 Agent 循环”冻结。
 
-## Milestone 1 - Foundation (Aug 27)
+## 里程碑一：项目基础（8 月 27 日）
 
-- Public repository and architecture record
-- Packaging, configuration, CLI entry point
-- Internal message, tool-call, and stop-reason types
+- 建立公开仓库并记录架构决策
+- 完成打包配置、运行配置和命令行入口
+- 定义内部消息、工具调用和终止原因类型
 
-## Milestone 2 - Local capabilities (Aug 28)
+## 里程碑二：本地工具（8 月 28 日）
 
-- Workspace boundary enforcement
-- File listing, reading, search, patch, and command tools
-- Unit tests for success and failure paths
+- 实现工作区边界与路径安全检查
+- 实现文件列表、读取、搜索、补丁和命令工具
+- 为正常流程和失败分支编写单元测试
 
-## Milestone 3 - Agent core (Aug 29)
+## 里程碑三：Agent 核心（8 月 29 日）
 
-- Provider adapter and fake provider
-- Tool-calling loop, retries, limits, and traces
-- Deterministic integration tests
+- 实现 DeepSeek Provider 和可控的伪造 Provider
+- 实现工具调用循环、重试、边界限制和运行轨迹
+- 完成可确定复现的集成测试
 
-## Milestone 4 - Quality and demo (Aug 30-31)
+## 里程碑四：质量与演示（8 月 30 日至 31 日）
 
-- Context budgeting and repeated-action detection
-- Real API smoke test
-- Demo project and stable two-minute recording script
-- Security and secret scan
+- 实现上下文预算与重复行为检测
+- 完成真实 DeepSeek API 冒烟测试
+- 准备演示项目和稳定的两分钟录屏脚本
+- 执行安全检查与敏感信息扫描
 
-## Milestone 5 - Submission (Sep 1-2)
+## 里程碑五：提交（9 月 1 日至 2 日）
 
-- Freeze features and fix only verified defects
-- Write the <=1000-Chinese-character `README.txt`
-- Record and compress the <=2-minute MP4
-- Rehearse design explanation and adversarial interview questions
-- Verify public repository and final archive, then stop pushing before deadline
-
+- 停止增加新功能，只修复经过确认的缺陷
+- 编写不超过 1000 个汉字的 `README.txt`
+- 录制并压缩不超过两分钟的 MP4 视频
+- 演练设计介绍和压力面试问题
+- 确认公开仓库和最终压缩包无误，并在截止时间前停止推送

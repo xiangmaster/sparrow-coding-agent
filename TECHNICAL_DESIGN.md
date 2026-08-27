@@ -1,174 +1,161 @@
-# Technical Design
+# 技术设计
 
-## 1. Scope
+## 1. 项目范围
 
-Sparrow is a single-user command-line coding agent. Given a task and a workspace,
-it can inspect files, edit code, run commands, observe results, and continue until
-it can justify that the task is complete.
+Sparrow 是一个单用户命令行编程智能体。用户提供任务和工作区后，
+它可以检查文件、修改代码、执行命令、观察结果，并持续工作，直到能够用证据
+说明任务已经完成。
 
-The project deliberately avoids GUI work, multi-agent orchestration, retrieval
-systems, and server-hosted execution. The assessment values ownership of the
-agent mechanics, so a reliable and explainable core is more important than a
-large feature list.
+项目刻意不开发图形界面、多 Agent 编排、检索系统和服务端托管执行功能。
+本次考核重视对 Agent 机制的真正理解，因此可靠、可解释的核心比功能数量更重要。
 
-## 2. Technology choices
+## 2. 技术选型
 
-| Area | Choice | Rationale |
+| 领域 | 选择 | 理由 |
 | --- | --- | --- |
-| Language | Python 3.11+ | Fast iteration, clear subprocess and filesystem APIs, easy review |
-| CLI | `argparse` + standard library | Keeps the control flow visible and dependencies small |
-| Model client | `openai` Python package pointed at DeepSeek | Reuses a documented compatible transport; agent logic remains local |
-| Default model | `deepseek-v4-pro` (V4-Pro-0813) | Latest general DeepSeek model with thinking mode and tool calls |
-| Development model | `deepseek-v4-flash` (V4-Flash-0731) | Faster and cheaper for repeated tests |
-| Model protocol | DeepSeek Chat Completions tool calling for v1 | Typed calls supported by both selected models |
-| Data model | `dataclasses` and typed dictionaries | Avoids hiding state transitions behind a framework |
-| Testing | `pytest` | Concise unit and integration tests |
-| Packaging | `pyproject.toml`, `src/` layout | Reproducible installation and clean imports |
+| 开发语言 | Python 3.11 及以上 | 迭代速度快，文件系统和子进程 API 清晰，便于审查 |
+| 命令行 | `argparse` 与标准库 | 保持控制流透明，减少依赖 |
+| 模型客户端 | `openai` Python 包指向 DeepSeek | 使用官方文档明确支持的兼容传输层，Agent 逻辑仍完全位于本地 |
+| 默认模型 | `deepseek-v4-pro`（V4-Pro-0813） | 当前最新的 DeepSeek 通用模型，支持思考模式和工具调用 |
+| 开发模型 | `deepseek-v4-flash`（V4-Flash-0731） | 响应更快、成本更低，适合重复测试 |
+| 模型协议 | DeepSeek Chat Completions 工具调用 | 两个目标模型都支持结构化调用 |
+| 数据模型 | `dataclasses` 和类型字典 | 不使用框架隐藏状态变化 |
+| 测试 | `pytest` | 适合编写简洁的单元和集成测试 |
+| 打包 | `pyproject.toml` 与 `src/` 目录布局 | 安装可复现，导入边界清晰 |
 
-The first provider calls `client.chat.completions.create(...)` with DeepSeek's
-`https://api.deepseek.com` base URL. The provider module is intentionally narrow:
-it translates Sparrow's internal messages and tool definitions to the API
-format, then translates the response back. The rest of the code does not depend
-on a provider-specific response type, so another provider or the Responses API
-can be added later without changing the agent loop or local tools.
+首个 Provider 通过 DeepSeek 的 `https://api.deepseek.com` 基础地址调用
+`client.chat.completions.create(...)`。Provider 保持尽可能简洁：它将 Sparrow
+的内部消息和工具定义转换为 API 格式，再将响应转换回内部格式。
+其余代码不依赖 DeepSeek 响应类型，因此未来可以在不修改 Agent 循环和本地工具的
+前提下接入其他 Provider 或 Responses API。
 
-Thinking mode is enabled with `reasoning_effort="high"`. DeepSeek requires an
-assistant message's `reasoning_content` to be preserved when a request includes
-tools, so Sparrow stores it as protocol state and returns it with every matching
-assistant/tool-call turn. It is not printed as the user-facing final answer.
+项目以 `reasoning_effort="high"` 启用思考模式。DeepSeek 规定：当请求包含工具时，
+必须保留 Assistant 消息中的 `reasoning_content`，并在后续相关请求中完整传回。
+Sparrow 将其作为协议状态保存，但不会将其作为面向用户的最终答案输出。
 
-Only custom function definitions are sent to the model. Sparrow does not enable
-provider-hosted file search, code execution, shell, or patch tools; every action
-against the workspace is dispatched and executed by code in this repository.
+发送给模型的只有自定义函数说明。Sparrow 不启用供应商托管的文件搜索、
+代码执行、Shell 或补丁工具；所有工作区操作均由本仓库中的代码调度和执行。
 
-## 3. Components
+## 3. 系统组件
 
 ```text
-CLI
- `- loads configuration and task
- `- constructs Agent
+命令行入口
+ `- 加载配置和用户任务
+ `- 构造 Agent
 
 Agent
- |- owns the iteration loop and limits
- |- sends conversation to ModelProvider
- |- validates and dispatches tool calls
- |- appends normalized results to Context
- `- decides and records why execution stopped
+ |- 管理迭代循环和边界限制
+ |- 通过 ModelProvider 请求模型
+ |- 验证并调度工具调用
+ |- 将标准化结果追加至 Context
+ `- 决定并记录终止原因
 
 Context
- |- stores messages and tool observations
- |- estimates size and truncates oversized observations
- `- preserves the task, system rules, and recent causal chain
+ |- 保存消息、思考协议状态和工具观察结果
+ |- 估算上下文大小并截断过长观察结果
+ `- 保留用户任务、系统规则和最近因果链
 
 ToolRegistry
- |- exposes JSON schemas to the model
- |- validates names and arguments
- `- maps calls to local implementations
+ |- 向模型暴露 JSON Schema
+ |- 验证工具名称和参数
+ `- 将调用映射至本地实现
 
 Workspace / Tools
- |- list and read files
- |- search text
- |- apply a patch
- `- run a bounded subprocess
+ |- 列出和读取文件
+ |- 搜索文本
+ |- 应用补丁
+ `- 执行受限子进程
 
 RunLogger
- `- writes a human-readable and JSONL execution trace
+ `- 写入人类可读日志和 JSONL 运行轨迹
 ```
 
-## 4. Agent loop
+## 4. Agent 循环
 
-1. Initialize the conversation with behavioral rules and the user's task.
-2. Ask the model for either tool calls or a final response.
-3. Reject malformed, unknown, or invalid tool calls as structured tool errors.
-4. Execute valid calls locally and append bounded observations.
-5. Continue until the model returns a final answer.
-6. Stop defensively on maximum iterations, repeated identical calls, user
-   interruption, unrecoverable provider error, or budget exhaustion.
+1. 使用行为规则和用户任务初始化对话。
+2. 请求模型返回工具调用或最终答案。
+3. 将格式错误、未知工具或非法参数转换为结构化工具错误。
+4. 在本地执行合法调用，并追加受长度限制的观察结果。
+5. 模型返回最终答案时正常终止。
+6. 达到最大迭代数、反复执行相同调用、用户中断、Provider 无法恢复或预算耗尽时强制终止。
 
-The model's final answer is not by itself proof of completion. The system prompt
-asks it to inspect relevant changes and run suitable tests. The trace records
-whether verification actually occurred so the user can judge the result.
+模型的最终回答本身不构成任务完成证据。系统提示词将要求模型检查修改，
+并在可行时执行相关测试。运行轨迹会记录验证是否真正发生，由用户最终判断结果。
 
-## 5. Initial tools
+## 5. 首版工具
 
 ### `list_files`
 
-Returns a bounded workspace tree. Hidden and ignored directories are excluded by
-default to reduce noise and accidental secret exposure.
+返回受限的工作区文件树。默认排除隐藏和忽略目录，减少噪声与凭据泄漏风险。
 
 ### `read_file`
 
-Reads a UTF-8 text file with optional line bounds. Binary files and oversized
-reads return explicit errors instead of silently consuming context.
+按可选行号范围读取 UTF-8 文本文件。遇到二进制文件或超长读取时返回明确错误，
+不会无声地占满上下文。
 
 ### `search_files`
 
-Searches text in the workspace and returns file, line number, and matched text.
-Results are capped deterministically.
+在工作区内搜索文本，返回文件、行号和匹配内容。结果数量受到确定性上限约束。
 
 ### `apply_patch`
 
-Applies a unified diff after validating every affected path. Patch-based editing
-makes changes compact, inspectable, and less likely to overwrite unrelated code.
+在验证所有目标路径后应用统一差异补丁。补丁式编辑更紧凑、可审查，
+也更不容易覆盖无关代码。
 
 ### `run_command`
 
-Runs a command in the workspace with a timeout, output cap, and captured exit
-code. The initial implementation uses an argument list rather than a shell where
-possible, avoiding implicit expansion and command substitution.
+在工作区内执行命令，并限制超时时间和输出长度，同时捕获退出码。
+首版在可能时直接使用参数列表而不经过 Shell，避免隐式展开和命令替换。
 
-## 6. Safety boundaries
+## 6. 安全边界
 
-- Resolve every filesystem path and require it to remain below the workspace.
-- Reject symlink escapes after canonical path resolution.
-- Never read `.env`, common credential files, or VCS internals through tools.
-- Bound file size, search count, subprocess duration, and captured output.
-- Surface failures to the model as data; do not crash the whole loop.
-- Require confirmation for a small set of destructive command patterns.
-- Keep API credentials only in environment variables or ignored local files.
+- 解析每个文件系统路径，并要求最终路径位于工作区内。
+- 在规范化路径后拒绝通过符号链接越出工作区。
+- 工具不得读取 `.env`、常见凭据文件或版本控制内部目录。
+- 限制文件大小、搜索结果数、子进程时长和捕获的输出量。
+- 将工具失败作为数据返回给模型，不因单次失败终止整个循环。
+- 对少量明确具有破坏性的命令模式要求人工确认。
+- API 凭据只能放在环境变量或被 Git 忽略的本地文件中。
 
-The project does not claim to be a secure sandbox. It is a guarded local agent,
-and that limitation will be stated explicitly in the CLI and documentation.
+本项目不宣称自己构成安全沙箱。它是一个带防护边界的本地 Agent，
+该局限性将在命令行和文档中明确说明。
 
-## 7. Context management
+## 7. 上下文管理
 
-The conversation is held locally so its behavior is testable and independent of
-server-side conversation storage. Each observation has a character cap. When the
-estimated context exceeds a threshold, Sparrow retains:
+对话由本地代码维护，因此它的行为可测试，且不依赖服务端对话存储。
+每个工具观察结果都有字符上限。当估算的上下文超过阈值时，Sparrow 保留：
 
-1. system rules and the original task;
-2. a compact factual summary of older completed steps;
-3. recent model messages, tool calls, and matching tool results.
+1. 系统规则和原始用户任务；
+2. 对较早已完成步骤的精简事实摘要；
+3. 最近的模型消息、工具调用及其对应结果。
 
-Tool-call/result pairs are never separated. This preserves protocol validity and
-the causal information needed for the next decision.
+工具调用和结果绝不分离，并且保留 DeepSeek 协议要求的 `reasoning_content`。
+这能同时维持 API 协议合法性和下一步决策所需的因果信息。
 
-## 8. Error handling and termination
+## 8. 错误处理与终止
 
-Provider errors are classified as retryable or terminal. Retryable failures use
-bounded exponential backoff. Tool errors become structured observations. The
-loop always ends with one explicit stop reason:
+Provider 错误被分为“可重试”和“终止性”两类。可重试错误使用有上限的指数退避。
+工具错误转换为结构化观察结果。循环总是以下列明确原因之一结束：
 
-- `completed`
-- `max_iterations`
-- `repeated_action`
-- `provider_error`
-- `budget_exceeded`
-- `cancelled`
+- `completed`：正常完成
+- `max_iterations`：达到最大迭代数
+- `repeated_action`：反复执行相同操作
+- `provider_error`：模型服务无法恢复
+- `budget_exceeded`：超出运行预算
+- `cancelled`：用户取消
 
-This makes termination behavior easy to test and explain in the interview.
+明确的终止原因使相关行为便于测试，也便于在面试中解释。
 
-## 9. Testing strategy
+## 9. 测试策略
 
-- Unit tests for path containment, schemas, output truncation, and stop rules.
-- Fake-provider tests for deterministic multi-step agent loops.
-- Integration tests in temporary workspaces for file and command tools.
-- A recorded demo fixture containing a real bug and an automated test suite.
+- 为路径范围、工具 Schema、输出截断和终止规则编写单元测试。
+- 使用伪造 Provider 对多步 Agent 循环进行确定性测试。
+- 在临时工作区中对文件和命令工具进行集成测试。
+- 准备包含真实缺陷和自动化测试的固定演示项目。
 
-No test needs a paid API call except an explicitly marked smoke test.
+除显式标记的 API 冒烟测试外，所有测试均不发生付费模型调用。
 
-## 10. Deferred features
+## 10. 暂缓功能
 
-Streaming output, multiple providers, automatic context summarization, token-cost
-accounting, and richer command approval policies come after the end-to-end loop.
-They will only be added when the core remains stable and demonstrable.
+流式输出、多模型供应商、自动上下文摘要、Token 成本统计和更细致的命令审批策略
+均安排在端到端核心循环之后。只有在核心仍然稳定、可演示的前提下才会增加这些功能。

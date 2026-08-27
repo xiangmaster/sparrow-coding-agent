@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "sparrow-coding-agent"
 version = "0.1.0"
-description = "A small, inspectable coding agent built from first principles"
+description = "一个从零实现、便于理解和检查的编程智能体"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -28,4 +28,3 @@ testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sparrow_agent"]
-
