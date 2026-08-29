@@ -38,8 +38,9 @@ Chat Completions API 访问。开发阶段可切换至 DeepSeek-V4-Flash，
 已经完成内部数据模型、工作区安全边界、五个本地工具、DeepSeek Provider、
 上下文管理、Agent 主循环和完成证据门。确定性离线场景已覆盖“读取、修改、
 验证失败、再次修改、验证成功、申请完成”的完整纠错链路。
-当前还支持版本化 JSONL 运行轨迹、无副作用离线重放和完整命令行入口。
-下一阶段将准备固定演示项目，并完成真实端到端验收。
+同时支持版本化 JSONL 运行轨迹、无副作用离线重放和完整命令行入口，
+并提供可重复重建的固定缺陷项目、演示准备脚本和最近轨迹重放脚本，
+用于真实端到端验收和两分钟录屏。完整流程见 [DEMO.md](DEMO.md)。
 
 每次启用记录器运行时，版本化 JSONL 轨迹和中文摘要日志会写入被 Git 忽略的
 `.sparrow/runs/`，文件权限为 `0600`。轨迹包含用户任务、模型响应、
@@ -78,4 +79,5 @@ cp -n .env.example .env
 `.env`，不会回退到全局环境；该测试固定采用
 `deepseek-v4-flash`、低推理强度和较小输出上限，并会产生少量 API 费用。
 
-设计原理见 [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md)，交付计划见 [ROADMAP.md](ROADMAP.md)。
+设计原理见 [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md)，交付计划见
+[ROADMAP.md](ROADMAP.md)，固定演示的准备、运行和录屏顺序见 [DEMO.md](DEMO.md)。

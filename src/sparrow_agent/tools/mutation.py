@@ -49,15 +49,21 @@ class ApplyPatchTool:
     spec = ToolSpec(
         name="apply_patch",
         description=(
-            "应用标准 unified diff 补丁。支持修改和新增 UTF-8 文本文件；"
-            "整份补丁验证通过后才开始写入。"
+            "应用带精确行号的标准 unified diff 补丁。支持修改和新增 UTF-8 文本文件；"
+            "整份补丁验证通过后才开始写入。必须使用 `--- a/路径`、`+++ b/路径` 和"
+            " `@@ -旧起点,旧行数 +新起点,新行数 @@` 文件头；每个正文行必须以空格、"
+            "+ 或 - 开头。不要使用 `*** Begin Patch`、`*** Update File` 或无行号的 `@@`。"
         ),
         parameters={
             "type": "object",
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "以 ---、+++ 和 @@ 行组成的 unified diff",
+                    "description": (
+                        "带精确行号的 unified diff，例如："
+                        "--- a/app.py\\n+++ b/app.py\\n"
+                        "@@ -1,1 +1,1 @@\\n-old = 1\\n+new = 1\\n"
+                    ),
                 }
             },
             "required": ["patch"],

@@ -35,6 +35,18 @@ def test_apply_patch_modifies_existing_file_and_preserves_mode(tmp_path: Path) -
     assert result.metadata["changed_files"] == ("main.py",)
 
 
+def test_apply_patch_schema_explains_exact_supported_format(tmp_path: Path) -> None:
+    schema = ApplyPatchTool(Workspace(tmp_path)).spec.to_model_schema()
+    function = schema["function"]
+    description = function["description"] + function["parameters"]["properties"][
+        "patch"
+    ]["description"]
+
+    assert "@@ -旧起点,旧行数 +新起点,新行数 @@" in description
+    assert "*** Begin Patch" in description
+    assert "@@ -1,1 +1,1 @@" in description
+
+
 def test_apply_patch_creates_new_file(tmp_path: Path) -> None:
     patch = """--- /dev/null
 +++ b/new.txt
