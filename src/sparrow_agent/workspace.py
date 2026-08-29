@@ -23,7 +23,7 @@ class WorkspacePathError(WorkspaceError):
 
 
 _BLOCKED_PARTS: Final[frozenset[str]] = frozenset(
-    {".git", ".hg", ".svn", ".ssh"}
+    {".git", ".hg", ".sparrow", ".ssh", ".svn"}
 )
 _BLOCKED_FILENAMES: Final[frozenset[str]] = frozenset(
     {

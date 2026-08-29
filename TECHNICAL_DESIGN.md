@@ -80,7 +80,7 @@ CompletionGate
  `- 接受完成申请，或将缺少的证据返回 Agent
 
 RunRecorder / Replay
- |- 写入人类可读日志和 JSONL 运行轨迹
+ |- 写入权限受限的中文日志和带版本号的 JSONL 运行轨迹
  `- 在不调用模型、不重新执行命令的情况下重放轨迹
 ```
 

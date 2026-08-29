@@ -13,10 +13,12 @@ from sparrow_agent.context import Context
 from sparrow_agent.evidence import EvidenceLedger
 from sparrow_agent.models import AgentResult, MessageRole, StopReason, ToolCall, ToolResult
 from sparrow_agent.provider import (
+    ModelResponse,
     ModelProvider,
     ProviderError,
     ProviderRequestError,
 )
+from sparrow_agent.recording import EventRecorder, NullRecorder
 from sparrow_agent.tools import ToolRegistry
 
 DEFAULT_SYSTEM_PROMPT = """你是 Sparrow，一个在本地工具边界内工作的编程智能体。
@@ -63,6 +65,7 @@ class Agent:
         completion_gate: CompletionGate | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         sleeper: Callable[[float], None] = time.sleep,
+        recorder: EventRecorder | None = None,
     ) -> None:
         self._provider = provider
         self._tools = tools
@@ -70,6 +73,7 @@ class Agent:
         self._completion_gate = completion_gate or CompletionGate()
         self._system_prompt = system_prompt
         self._sleeper = sleeper
+        self._recorder = recorder or NullRecorder()
         schemas = tools.model_schemas()
         names = {schema["function"]["name"] for schema in schemas}
         if self._completion_gate.spec.name in names:
@@ -93,35 +97,68 @@ class Agent:
         last_action_signature: str | None = None
         repeated_actions = 0
         last_visible_text = ""
+        self._recorder.record(
+            "run_started",
+            {
+                "task": task,
+                "max_iterations": self._settings.max_iterations,
+                "max_total_tokens": self._settings.max_total_tokens,
+            },
+        )
 
         for iteration in range(1, self._settings.max_iterations + 1):
-            response_or_error = self._request_model(context)
+            response_or_error = self._request_model(context, iteration)
             if isinstance(response_or_error, ProviderError):
-                return AgentResult(
-                    stop_reason=StopReason.PROVIDER_ERROR,
-                    final_text=str(response_or_error),
-                    iterations=iteration,
+                return self._finish(
+                    AgentResult(
+                        stop_reason=StopReason.PROVIDER_ERROR,
+                        final_text=str(response_or_error),
+                        iterations=iteration,
+                    )
                 )
             response = response_or_error
             context.append_assistant(response.message)
+            self._recorder.record(
+                "model_response",
+                {
+                    "iteration": iteration,
+                    "finish_reason": response.finish_reason,
+                    "model": response.model,
+                    "response_id": response.response_id,
+                    "message": response.message.to_dict(),
+                    "tool_call_count": len(response.message.tool_calls),
+                    "usage": {
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "reasoning_tokens": response.usage.reasoning_tokens,
+                        "total_tokens": response.usage.total_tokens,
+                    },
+                },
+            )
             if response.message.content:
                 last_visible_text = response.message.content
             total_tokens += response.usage.total_tokens
             if total_tokens > self._settings.max_total_tokens:
-                return AgentResult(
-                    stop_reason=StopReason.BUDGET_EXCEEDED,
-                    final_text=(
-                        f"累计 Token 用量 {total_tokens} 超过预算 "
-                        f"{self._settings.max_total_tokens}"
-                    ),
-                    iterations=iteration,
+                return self._finish(
+                    AgentResult(
+                        stop_reason=StopReason.BUDGET_EXCEEDED,
+                        final_text=(
+                            f"累计 Token 用量 {total_tokens} 超过预算 "
+                            f"{self._settings.max_total_tokens}"
+                        ),
+                        iterations=iteration,
+                    )
                 )
 
             calls = response.message.tool_calls
             if not calls:
-                context.append_control_feedback(
+                feedback = (
                     "你返回了自然语言答案，但尚未提交 request_completion。"
                     "如果任务已完成，请提交结构化完成申请；否则继续使用工具。"
+                )
+                context.append_control_feedback(feedback)
+                self._recorder.record(
+                    "control_feedback", {"iteration": iteration, "feedback": feedback}
                 )
                 continue
 
@@ -130,7 +167,8 @@ class Agent:
                 for call in calls:
                     result = ToolResult.failure(structural_error)
                     context.append_tool_result(call, result)
-                    evidence.record(call, result)
+                    event_index = evidence.record(call, result)
+                    self._record_tool_result(iteration, event_index, call, result)
                     (
                         last_action_signature,
                         repeated_actions,
@@ -143,20 +181,26 @@ class Agent:
                         self._settings.repeated_action_limit,
                     )
                     if repeated:
-                        return _repeated_result(iteration)
+                        return self._finish(_repeated_result(iteration))
                 continue
 
             call = calls[0] if len(calls) == 1 else None
             if call is not None and call.name == self._completion_gate.spec.name:
                 decision = self._completion_gate.evaluate(call, evidence)
                 context.append_tool_result(call, decision.result)
+                event_index = evidence.record(call, decision.result)
+                self._record_tool_result(
+                    iteration, event_index, call, decision.result
+                )
                 if decision.accepted:
                     assert decision.completion_request is not None
-                    return AgentResult(
-                        stop_reason=StopReason.COMPLETED,
-                        final_text=decision.completion_request.summary,
-                        iterations=iteration,
-                        completion_request=decision.completion_request,
+                    return self._finish(
+                        AgentResult(
+                            stop_reason=StopReason.COMPLETED,
+                            final_text=decision.completion_request.summary,
+                            iterations=iteration,
+                            completion_request=decision.completion_request,
+                        )
                     )
                 (
                     last_action_signature,
@@ -170,13 +214,16 @@ class Agent:
                     self._settings.repeated_action_limit,
                 )
                 if repeated:
-                    return _repeated_result(iteration)
+                    return self._finish(_repeated_result(iteration))
                 continue
 
             for tool_call in calls:
                 result = self._tools.execute(tool_call)
                 context.append_tool_result(tool_call, result)
-                evidence.record(tool_call, result)
+                event_index = evidence.record(tool_call, result)
+                self._record_tool_result(
+                    iteration, event_index, tool_call, result
+                )
                 (
                     last_action_signature,
                     repeated_actions,
@@ -189,29 +236,109 @@ class Agent:
                     self._settings.repeated_action_limit,
                 )
                 if repeated:
-                    return _repeated_result(iteration)
+                    return self._finish(_repeated_result(iteration))
 
         final_text = "达到最大迭代次数，任务未通过完成证据检查"
         if last_visible_text:
             final_text += f"。最后一次模型输出：{last_visible_text}"
-        return AgentResult(
-            stop_reason=StopReason.MAX_ITERATIONS,
-            final_text=final_text,
-            iterations=self._settings.max_iterations,
+        return self._finish(
+            AgentResult(
+                stop_reason=StopReason.MAX_ITERATIONS,
+                final_text=final_text,
+                iterations=self._settings.max_iterations,
+            )
         )
 
-    def _request_model(self, context: Context):
+    def _request_model(
+        self, context: Context, iteration: int
+    ) -> ModelResponse | ProviderError:
         for attempt in range(self._settings.provider_retries + 1):
             try:
                 return self._provider.complete(context.messages, self._model_tools)
             except ProviderRequestError as exc:
                 if not exc.retryable or attempt == self._settings.provider_retries:
+                    self._recorder.record(
+                        "provider_error",
+                        {
+                            "iteration": iteration,
+                            "attempt": attempt + 1,
+                            "retryable": exc.retryable,
+                            "error": str(exc),
+                        },
+                    )
                     return exc
                 delay = self._settings.retry_base_seconds * (2**attempt)
+                self._recorder.record(
+                    "provider_retry",
+                    {
+                        "iteration": iteration,
+                        "attempt": attempt + 1,
+                        "next_attempt": attempt + 2,
+                        "delay_seconds": delay,
+                        "error": str(exc),
+                    },
+                )
                 self._sleeper(delay)
             except ProviderError as exc:
+                self._recorder.record(
+                    "provider_error",
+                    {
+                        "iteration": iteration,
+                        "attempt": attempt + 1,
+                        "retryable": False,
+                        "error": str(exc),
+                    },
+                )
                 return exc
         raise AssertionError("Provider 重试循环不应到达此处")
+
+    def _record_tool_result(
+        self,
+        iteration: int,
+        event_index: int,
+        call: ToolCall,
+        result: ToolResult,
+    ) -> None:
+        self._recorder.record(
+            "tool_result",
+            {
+                "iteration": iteration,
+                "event_index": event_index,
+                "tool_call_id": call.id,
+                "tool_name": call.name,
+                "arguments": call.to_dict(),
+                **result.to_dict(),
+            },
+        )
+
+    def _finish(self, result: AgentResult) -> AgentResult:
+        completion = result.completion_request
+        completion_data = None
+        if completion is not None:
+            completion_data = {
+                "summary": completion.summary,
+                "changed_files": completion.changed_files,
+                "verifications": [
+                    {
+                        "command": record.command,
+                        "exit_code": record.exit_code,
+                        "event_index": record.event_index,
+                        "output_summary": record.output_summary,
+                    }
+                    for record in completion.verifications
+                ],
+                "remaining_risks": completion.remaining_risks,
+            }
+        self._recorder.record(
+            "run_finished",
+            {
+                "stop_reason": result.stop_reason.value,
+                "final_text": result.final_text,
+                "iterations": result.iterations,
+                "completion_request": completion_data,
+            },
+        )
+        return result
 
 
 def _tool_call_structure_error(calls: tuple[ToolCall, ...]) -> str | None:
