@@ -190,6 +190,8 @@ def test_run_command_captures_success_and_uses_requested_cwd(tmp_path: Path) -> 
     assert result.output == "sub\n"
     assert result.metadata["exit_code"] == 0
     assert result.metadata["cwd"] == "sub"
+    assert result.metadata["command"] == ["python3", "check.py"]
+    assert result.metadata["resolved_executable"] == "python3"
 
 
 def test_run_command_returns_nonzero_exit_as_structured_failure(tmp_path: Path) -> None:

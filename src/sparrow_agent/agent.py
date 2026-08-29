@@ -1,0 +1,251 @@
+"""Sparrow 的可验证 Agent 主循环。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from sparrow_agent.completion import CompletionGate
+from sparrow_agent.context import Context
+from sparrow_agent.evidence import EvidenceLedger
+from sparrow_agent.models import AgentResult, MessageRole, StopReason, ToolCall, ToolResult
+from sparrow_agent.provider import (
+    ModelProvider,
+    ProviderError,
+    ProviderRequestError,
+)
+from sparrow_agent.tools import ToolRegistry
+
+DEFAULT_SYSTEM_PROMPT = """你是 Sparrow，一个在本地工具边界内工作的编程智能体。
+先检查项目再修改；每次工具失败后根据观察调整，不要假装操作成功。
+修改代码后必须运行合适的验证。只有任务确实完成时，才能调用 request_completion；
+自然语言结论不会结束任务，完成申请必须如实列出修改文件、成功验证命令和剩余风险。"""
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSettings:
+    """Agent 循环、预算、重试和重复动作边界。"""
+
+    max_iterations: int = 20
+    repeated_action_limit: int = 3
+    max_total_tokens: int = 200_000
+    provider_retries: int = 2
+    retry_base_seconds: float = 0.5
+    max_observation_characters: int = 30_000
+
+    def __post_init__(self) -> None:
+        if self.max_iterations < 1:
+            raise ValueError("max_iterations 必须大于 0")
+        if self.repeated_action_limit < 2:
+            raise ValueError("repeated_action_limit 必须至少为 2")
+        if self.max_total_tokens < 1:
+            raise ValueError("max_total_tokens 必须大于 0")
+        if self.provider_retries < 0:
+            raise ValueError("provider_retries 不能为负数")
+        if self.retry_base_seconds < 0:
+            raise ValueError("retry_base_seconds 不能为负数")
+        if self.max_observation_characters < 100:
+            raise ValueError("max_observation_characters 不能小于 100")
+
+
+class Agent:
+    """编排 Provider、工具、上下文和完成门，不隐藏任何循环状态。"""
+
+    def __init__(
+        self,
+        provider: ModelProvider,
+        tools: ToolRegistry,
+        *,
+        settings: AgentSettings | None = None,
+        completion_gate: CompletionGate | None = None,
+        system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+        sleeper: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._provider = provider
+        self._tools = tools
+        self._settings = settings or AgentSettings()
+        self._completion_gate = completion_gate or CompletionGate()
+        self._system_prompt = system_prompt
+        self._sleeper = sleeper
+        schemas = tools.model_schemas()
+        names = {schema["function"]["name"] for schema in schemas}
+        if self._completion_gate.spec.name in names:
+            raise ValueError("ToolRegistry 不能注册保留工具 request_completion")
+        self._model_tools = tuple(
+            [*schemas, self._completion_gate.spec.to_model_schema()]
+        )
+        self.last_context: Context | None = None
+        self.last_evidence: EvidenceLedger | None = None
+
+    def run(self, task: str) -> AgentResult:
+        context = Context(
+            self._system_prompt,
+            task,
+            max_observation_characters=self._settings.max_observation_characters,
+        )
+        evidence = EvidenceLedger()
+        self.last_context = context
+        self.last_evidence = evidence
+        total_tokens = 0
+        last_action_signature: str | None = None
+        repeated_actions = 0
+        last_visible_text = ""
+
+        for iteration in range(1, self._settings.max_iterations + 1):
+            response_or_error = self._request_model(context)
+            if isinstance(response_or_error, ProviderError):
+                return AgentResult(
+                    stop_reason=StopReason.PROVIDER_ERROR,
+                    final_text=str(response_or_error),
+                    iterations=iteration,
+                )
+            response = response_or_error
+            context.append_assistant(response.message)
+            if response.message.content:
+                last_visible_text = response.message.content
+            total_tokens += response.usage.total_tokens
+            if total_tokens > self._settings.max_total_tokens:
+                return AgentResult(
+                    stop_reason=StopReason.BUDGET_EXCEEDED,
+                    final_text=(
+                        f"累计 Token 用量 {total_tokens} 超过预算 "
+                        f"{self._settings.max_total_tokens}"
+                    ),
+                    iterations=iteration,
+                )
+
+            calls = response.message.tool_calls
+            if not calls:
+                context.append_control_feedback(
+                    "你返回了自然语言答案，但尚未提交 request_completion。"
+                    "如果任务已完成，请提交结构化完成申请；否则继续使用工具。"
+                )
+                continue
+
+            structural_error = _tool_call_structure_error(calls)
+            if structural_error is not None:
+                for call in calls:
+                    result = ToolResult.failure(structural_error)
+                    context.append_tool_result(call, result)
+                    evidence.record(call, result)
+                    (
+                        last_action_signature,
+                        repeated_actions,
+                        repeated,
+                    ) = _update_repetition(
+                        call,
+                        result,
+                        last_action_signature,
+                        repeated_actions,
+                        self._settings.repeated_action_limit,
+                    )
+                    if repeated:
+                        return _repeated_result(iteration)
+                continue
+
+            call = calls[0] if len(calls) == 1 else None
+            if call is not None and call.name == self._completion_gate.spec.name:
+                decision = self._completion_gate.evaluate(call, evidence)
+                context.append_tool_result(call, decision.result)
+                if decision.accepted:
+                    assert decision.completion_request is not None
+                    return AgentResult(
+                        stop_reason=StopReason.COMPLETED,
+                        final_text=decision.completion_request.summary,
+                        iterations=iteration,
+                        completion_request=decision.completion_request,
+                    )
+                (
+                    last_action_signature,
+                    repeated_actions,
+                    repeated,
+                ) = _update_repetition(
+                    call,
+                    decision.result,
+                    last_action_signature,
+                    repeated_actions,
+                    self._settings.repeated_action_limit,
+                )
+                if repeated:
+                    return _repeated_result(iteration)
+                continue
+
+            for tool_call in calls:
+                result = self._tools.execute(tool_call)
+                context.append_tool_result(tool_call, result)
+                evidence.record(tool_call, result)
+                (
+                    last_action_signature,
+                    repeated_actions,
+                    repeated,
+                ) = _update_repetition(
+                    tool_call,
+                    result,
+                    last_action_signature,
+                    repeated_actions,
+                    self._settings.repeated_action_limit,
+                )
+                if repeated:
+                    return _repeated_result(iteration)
+
+        final_text = "达到最大迭代次数，任务未通过完成证据检查"
+        if last_visible_text:
+            final_text += f"。最后一次模型输出：{last_visible_text}"
+        return AgentResult(
+            stop_reason=StopReason.MAX_ITERATIONS,
+            final_text=final_text,
+            iterations=self._settings.max_iterations,
+        )
+
+    def _request_model(self, context: Context):
+        for attempt in range(self._settings.provider_retries + 1):
+            try:
+                return self._provider.complete(context.messages, self._model_tools)
+            except ProviderRequestError as exc:
+                if not exc.retryable or attempt == self._settings.provider_retries:
+                    return exc
+                delay = self._settings.retry_base_seconds * (2**attempt)
+                self._sleeper(delay)
+            except ProviderError as exc:
+                return exc
+        raise AssertionError("Provider 重试循环不应到达此处")
+
+
+def _tool_call_structure_error(calls: tuple[ToolCall, ...]) -> str | None:
+    ids = [call.id for call in calls]
+    if len(ids) != len(set(ids)):
+        return "同一助手消息中的 tool_call id 必须唯一"
+    completion_count = sum(call.name == "request_completion" for call in calls)
+    if completion_count and len(calls) != 1:
+        return "request_completion 不能与其他工具调用混在同一助手消息中"
+    return None
+
+
+def _update_repetition(
+    call: ToolCall,
+    result: ToolResult,
+    previous_signature: str | None,
+    previous_count: int,
+    limit: int,
+) -> tuple[str, int, bool]:
+    payload = json.dumps(
+        {"call": call.fingerprint(), "result": result.to_dict()},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    signature = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    count = previous_count + 1 if signature == previous_signature else 1
+    return signature, count, count >= limit
+
+
+def _repeated_result(iteration: int) -> AgentResult:
+    return AgentResult(
+        stop_reason=StopReason.REPEATED_ACTION,
+        final_text="检测到连续重复且结果相同的工具调用，已触发熔断",
+        iterations=iteration,
+    )

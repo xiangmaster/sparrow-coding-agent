@@ -124,6 +124,7 @@ class RunCommandTool:
             minimum=1,
             maximum=_MAX_OUTPUT_BYTES,
         )
+        requested_command = list(command)
         command = self._resolve_executable(command)
         _enforce_command_policy(command)
 
@@ -155,7 +156,8 @@ class RunCommandTool:
 
         duration_ms = round((time.monotonic() - started) * 1000)
         metadata = {
-            "command": command,
+            "command": requested_command,
+            "resolved_executable": command[0],
             "cwd": cwd.relative_to(self._workspace.root).as_posix(),
             "duration_ms": duration_ms,
             "exit_code": exit_code,
