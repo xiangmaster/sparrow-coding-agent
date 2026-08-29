@@ -36,29 +36,45 @@ class ToolCall:
     id: str
     name: str
     arguments: Mapping[str, Any] = field(default_factory=dict)
+    raw_arguments: str | None = None
+    argument_error: str | None = None
 
     def __post_init__(self) -> None:
-        if not self.id.strip():
+        if not isinstance(self.id, str) or not self.id.strip():
             raise ValueError("工具调用 id 不能为空")
-        if not self.name.strip():
+        if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("工具名称不能为空")
         if not isinstance(self.arguments, Mapping):
             raise TypeError("工具参数必须是映射")
+        if self.raw_arguments is not None and not isinstance(self.raw_arguments, str):
+            raise TypeError("raw_arguments 必须是字符串")
+        if self.argument_error is not None and not isinstance(self.argument_error, str):
+            raise TypeError("argument_error 必须是字符串")
+        if self.argument_error is not None and self.raw_arguments is None:
+            raise ValueError("参数解析错误必须保留 raw_arguments")
 
     def to_dict(self) -> dict[str, Any]:
         """转换为不依赖具体模型厂商的普通字典。"""
 
-        return {
+        data = {
             "id": self.id,
             "name": self.name,
             "arguments": dict(self.arguments),
         }
+        if self.raw_arguments is not None:
+            data["raw_arguments"] = self.raw_arguments
+        if self.argument_error is not None:
+            data["argument_error"] = self.argument_error
+        return data
 
     def fingerprint(self) -> str:
         """生成稳定指纹，用于识别重复工具调用。"""
 
+        fingerprint_arguments: Any = (
+            self.raw_arguments if self.argument_error is not None else self.arguments
+        )
         payload = json.dumps(
-            {"name": self.name, "arguments": self.arguments},
+            {"name": self.name, "arguments": fingerprint_arguments},
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -79,6 +95,14 @@ class Message:
     def __post_init__(self) -> None:
         if not isinstance(self.role, MessageRole):
             raise TypeError("role 必须是 MessageRole")
+        if self.content is not None and not isinstance(self.content, str):
+            raise TypeError("content 必须是字符串或 None")
+        if self.reasoning_content is not None and not isinstance(
+            self.reasoning_content, str
+        ):
+            raise TypeError("reasoning_content 必须是字符串或 None")
+        if self.tool_call_id is not None and not isinstance(self.tool_call_id, str):
+            raise TypeError("tool_call_id 必须是字符串或 None")
         if self.role is MessageRole.TOOL:
             if not self.tool_call_id:
                 raise ValueError("工具消息必须关联 tool_call_id")

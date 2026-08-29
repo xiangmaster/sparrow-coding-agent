@@ -31,6 +31,11 @@ class ToolRegistry:
     def execute(self, call: ToolCall) -> ToolResult:
         """执行工具调用，并将可预期和意外异常都转换为失败结果。"""
 
+        if call.argument_error is not None:
+            return ToolResult.failure(
+                call.argument_error,
+                metadata={"tool": call.name, "error_type": "ArgumentParseError"},
+            )
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult.failure(

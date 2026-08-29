@@ -29,13 +29,15 @@ Sparrow 是一个单用户命令行编程智能体。用户提供任务和工作
 | 测试 | `pytest` | 适合编写简洁的单元和集成测试 |
 | 打包 | `pyproject.toml` 与 `src/` 目录布局 | 安装可复现，导入边界清晰 |
 
-首个 Provider 通过 DeepSeek 的 `https://api.deepseek.com` 基础地址调用
+首个 Provider 依据 DeepSeek 官方的 [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)，
+通过 `https://api.deepseek.com` 基础地址调用
 `client.chat.completions.create(...)`。Provider 保持尽可能简洁：它将 Sparrow
 的内部消息和工具定义转换为 API 格式，再将响应转换回内部格式。
 其余代码不依赖 DeepSeek 响应类型，因此未来可以在不修改 Agent 循环和本地工具的
 前提下接入其他 Provider 或 Responses API。
 
-项目以 `reasoning_effort="high"` 启用思考模式。DeepSeek 规定：当请求包含工具时，
+项目以 `reasoning_effort="high"` 启用[思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)。
+DeepSeek 规定：当请求包含工具时，
 必须保留 Assistant 消息中的 `reasoning_content`，并在后续相关请求中完整传回。
 Sparrow 将其作为协议状态保存，但不会将其作为面向用户的最终答案输出。
 

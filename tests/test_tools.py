@@ -79,6 +79,21 @@ def test_registry_contains_unexpected_tool_exception() -> None:
     assert result.metadata["error_type"] == "RuntimeError"
 
 
+def test_registry_returns_tool_argument_parse_error_without_execution() -> None:
+    call = ToolCall(
+        id="bad",
+        name="explode",
+        raw_arguments="[",
+        argument_error="工具参数不是有效 JSON",
+    )
+
+    result = ToolRegistry([_ExplodingTool()]).execute(call)
+
+    assert result.ok is False
+    assert result.error == "工具参数不是有效 JSON"
+    assert result.metadata["error_type"] == "ArgumentParseError"
+
+
 def test_list_files_is_sorted_recursive_and_excludes_noise(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "b.py").write_text("b", encoding="utf-8")

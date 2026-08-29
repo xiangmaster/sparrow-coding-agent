@@ -25,6 +25,9 @@ sparrow = "sparrow_agent.cli:main"
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+markers = [
+  "api_smoke: 访问真实 DeepSeek API、默认跳过且可能产生少量费用",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sparrow_agent"]

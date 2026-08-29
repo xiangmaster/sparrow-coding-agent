@@ -35,6 +35,14 @@ Chat Completions API 访问。开发阶段可切换至 DeepSeek-V4-Flash，
 
 ## 当前状态
 
-架构已确定，核心功能实现中。
+已经完成内部数据模型、工作区安全边界、五个本地工具，以及保留思考协议状态的
+DeepSeek Provider。所有模型协议测试均使用伪造客户端，不消耗 API 额度。
+下一阶段将把 Provider、上下文和工具注册中心连接成可确定性测试的 Agent 主循环。
+
+真实 API 冒烟测试默认跳过。将 `.env.example` 复制为不会被 Git 跟踪的 `.env`，
+在其中设置 `DEEPSEEK_API_KEY` 后，使用
+`pytest --run-api-smoke tests/test_api_smoke.py` 显式执行。测试只读取项目根目录的
+`.env`，不会回退到全局环境；该测试固定采用
+`deepseek-v4-flash`、低推理强度和较小输出上限，并会产生少量 API 费用。
 
 设计原理见 [TECHNICAL_DESIGN.md](TECHNICAL_DESIGN.md)，交付计划见 [ROADMAP.md](ROADMAP.md)。

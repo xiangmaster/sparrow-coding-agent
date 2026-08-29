@@ -44,6 +44,21 @@ def test_tool_call_fingerprint_ignores_argument_order_and_call_id() -> None:
     assert first.fingerprint() == second.fingerprint()
 
 
+def test_tool_call_preserves_invalid_raw_arguments() -> None:
+    call = ToolCall(
+        id="bad",
+        name="read_file",
+        raw_arguments='{"path":',
+        argument_error="工具参数不是有效 JSON",
+    )
+
+    assert call.to_dict()["raw_arguments"] == '{"path":'
+    assert call.to_dict()["argument_error"] == "工具参数不是有效 JSON"
+
+    with pytest.raises(ValueError, match="raw_arguments"):
+        ToolCall(id="bad", name="read_file", argument_error="解析失败")
+
+
 def test_message_role_invariants_reject_invalid_tool_message() -> None:
     with pytest.raises(ValueError, match="tool_call_id"):
         Message(role=MessageRole.TOOL, content="读取完成")
@@ -54,6 +69,9 @@ def test_message_role_invariants_reject_invalid_tool_message() -> None:
             content="请读取文件",
             reasoning_content="不应出现在用户消息中",
         )
+
+    with pytest.raises(TypeError, match="content"):
+        Message(role=MessageRole.USER, content=123)  # type: ignore[arg-type]
 
 
 def test_tool_result_distinguishes_success_and_failure() -> None:
