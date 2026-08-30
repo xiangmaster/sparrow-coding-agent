@@ -3,13 +3,125 @@
 from pathlib import Path
 
 from sparrow_agent.models import ToolCall
-from sparrow_agent.tools import ApplyPatchTool, RunCommandTool, ToolRegistry
+from sparrow_agent.tools import (
+    ApplyPatchTool,
+    ReplaceTextTool,
+    RunCommandTool,
+    ToolRegistry,
+)
 from sparrow_agent.workspace import Workspace
 
 
 def _registry(tmp_path: Path) -> ToolRegistry:
     workspace = Workspace(tmp_path)
-    return ToolRegistry([ApplyPatchTool(workspace), RunCommandTool(workspace)])
+    return ToolRegistry(
+        [ReplaceTextTool(workspace), ApplyPatchTool(workspace), RunCommandTool(workspace)]
+    )
+
+
+def test_replace_text_atomically_updates_unique_match_and_preserves_mode(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "main.py"
+    target.write_text("before\nvalue = 1\nafter\n", encoding="utf-8")
+    target.chmod(0o744)
+
+    result = _registry(tmp_path).execute(
+        ToolCall(
+            id="replace",
+            name="replace_text",
+            arguments={
+                "path": "main.py",
+                "old_text": "before\nvalue = 1\n",
+                "new_text": "before\nvalue = 2\n",
+            },
+        )
+    )
+
+    assert result.ok is True
+    assert target.read_text(encoding="utf-8") == "before\nvalue = 2\nafter\n"
+    assert target.stat().st_mode & 0o777 == 0o744
+    assert result.metadata["changed_files"] == ("main.py",)
+    assert result.metadata["replacement_count"] == 1
+    assert not list(tmp_path.glob(".sparrow-replace-*.tmp"))
+
+
+def test_replace_text_requires_exact_match_count_before_writing(tmp_path: Path) -> None:
+    target = tmp_path / "values.txt"
+    target.write_text("old\nold\n", encoding="utf-8")
+    registry = _registry(tmp_path)
+
+    ambiguous = registry.execute(
+        ToolCall(
+            id="ambiguous",
+            name="replace_text",
+            arguments={"path": "values.txt", "old_text": "old", "new_text": "new"},
+        )
+    )
+    missing = registry.execute(
+        ToolCall(
+            id="missing",
+            name="replace_text",
+            arguments={
+                "path": "values.txt",
+                "old_text": "absent",
+                "new_text": "new",
+            },
+        )
+    )
+
+    assert ambiguous.ok is False and "实际匹配 2 次" in ambiguous.error
+    assert missing.ok is False and "实际匹配 0 次" in missing.error
+    assert target.read_text(encoding="utf-8") == "old\nold\n"
+
+    exact = registry.execute(
+        ToolCall(
+            id="exact",
+            name="replace_text",
+            arguments={
+                "path": "values.txt",
+                "old_text": "old",
+                "new_text": "new",
+                "expected_replacements": 2,
+            },
+        )
+    )
+    assert exact.ok is True
+    assert target.read_text(encoding="utf-8") == "new\nnew\n"
+
+
+def test_replace_text_rejects_noop_binary_sensitive_and_invalid_count(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "note.txt").write_text("same", encoding="utf-8")
+    (tmp_path / "binary.dat").write_bytes(b"old\0binary")
+    (tmp_path / ".env").write_text("TOKEN=old", encoding="utf-8")
+    registry = _registry(tmp_path)
+    calls = [
+        {"path": "note.txt", "old_text": "same", "new_text": "same"},
+        {"path": "binary.dat", "old_text": "old", "new_text": "new"},
+        {"path": ".env", "old_text": "old", "new_text": "new"},
+        {
+            "path": "note.txt",
+            "old_text": "same",
+            "new_text": "new",
+            "expected_replacements": True,
+        },
+    ]
+
+    results = [
+        registry.execute(
+            ToolCall(id=str(index), name="replace_text", arguments=arguments)
+        )
+        for index, arguments in enumerate(calls)
+    ]
+
+    assert all(result.ok is False for result in results)
+    assert "相同" in results[0].error
+    assert "二进制" in results[1].error
+    assert "禁止访问" in results[2].error
+    assert "1 到 100" in results[3].error
+    assert (tmp_path / "note.txt").read_text(encoding="utf-8") == "same"
 
 
 def test_apply_patch_modifies_existing_file_and_preserves_mode(tmp_path: Path) -> None:

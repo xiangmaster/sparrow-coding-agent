@@ -1,4 +1,4 @@
-"""经过完整预验证的统一差异补丁工具。"""
+"""经过完整预验证的精确文本替换与统一差异补丁工具。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ _HUNK_HEADER = re.compile(
 )
 _MAX_PATCH_CHARACTERS = 512_000
 _MAX_PATCHED_FILE_BYTES = 1024 * 1024
+_MAX_REPLACEMENT_CHARACTERS = 512_000
+_MAX_EXPECTED_REPLACEMENTS = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +43,115 @@ class _PreparedWrite:
     path: Path
     content: bytes
     mode: int
+
+
+class ReplaceTextTool:
+    """在唯一性或精确次数检查通过后原子替换 UTF-8 文本。"""
+
+    spec = ToolSpec(
+        name="replace_text",
+        description=(
+            "在现有 UTF-8 文件中原子替换精确文本，适合小范围可靠修改。"
+            "默认要求 old_text 在文件中恰好出现一次；若预期多处相同替换，必须显式设置"
+            " expected_replacements。匹配次数不符时不会写入文件。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "工作区相对文件路径",
+                },
+                "old_text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "必须与文件内容逐字符匹配的旧文本；应包含足够上下文以确保唯一",
+                },
+                "new_text": {
+                    "type": "string",
+                    "description": "替换后的新文本，可以为空字符串",
+                },
+                "expected_replacements": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": _MAX_EXPECTED_REPLACEMENTS,
+                    "default": 1,
+                    "description": "old_text 预期出现并被替换的精确次数",
+                },
+            },
+            "required": ["path", "old_text", "new_text"],
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self, workspace: Workspace) -> None:
+        self._workspace = workspace
+
+    def execute(self, arguments: Mapping[str, Any]) -> ToolResult:
+        path = arguments.get("path")
+        old_text = arguments.get("old_text")
+        new_text = arguments.get("new_text")
+        expected = arguments.get("expected_replacements", 1)
+        if not isinstance(path, str):
+            raise TypeError("参数 path 必须是字符串")
+        if not isinstance(old_text, str):
+            raise TypeError("参数 old_text 必须是字符串")
+        if not isinstance(new_text, str):
+            raise TypeError("参数 new_text 必须是字符串")
+        if not old_text:
+            raise ValueError("参数 old_text 不能为空")
+        if old_text == new_text:
+            raise ValueError("old_text 与 new_text 相同，不会产生修改")
+        if len(old_text) > _MAX_REPLACEMENT_CHARACTERS:
+            raise ValueError(f"old_text 不能超过 {_MAX_REPLACEMENT_CHARACTERS} 个字符")
+        if len(new_text) > _MAX_REPLACEMENT_CHARACTERS:
+            raise ValueError(f"new_text 不能超过 {_MAX_REPLACEMENT_CHARACTERS} 个字符")
+        if (
+            not isinstance(expected, int)
+            or isinstance(expected, bool)
+            or not 1 <= expected <= _MAX_EXPECTED_REPLACEMENTS
+        ):
+            raise ValueError(
+                f"expected_replacements 必须是 1 到 {_MAX_EXPECTED_REPLACEMENTS} 的整数"
+            )
+
+        target = self._workspace.resolve_file(path)
+        if target.stat().st_size > _MAX_PATCHED_FILE_BYTES:
+            raise WorkspacePathError(
+                f"文件超过 {_MAX_PATCHED_FILE_BYTES} 字节替换上限：{path}"
+            )
+        data = target.read_bytes()
+        if b"\0" in data:
+            raise WorkspacePathError(f"不支持修改二进制文件：{path}")
+        try:
+            source = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise WorkspacePathError(f"文件不是有效的 UTF-8 文本：{path}") from exc
+
+        actual = source.count(old_text)
+        if actual != expected:
+            raise ValueError(
+                f"old_text 实际匹配 {actual} 次，预期 {expected} 次；未修改文件"
+            )
+        updated = source.replace(old_text, new_text, expected)
+        encoded = updated.encode("utf-8")
+        if len(encoded) > _MAX_PATCHED_FILE_BYTES:
+            raise WorkspacePathError(
+                f"替换结果超过 {_MAX_PATCHED_FILE_BYTES} 字节上限：{path}"
+            )
+
+        mode = target.stat().st_mode & 0o777
+        _atomic_write(target, encoded, mode)
+        relative = target.relative_to(self._workspace.root).as_posix()
+        return ToolResult.success(
+            f"已替换 {relative} 中的 {actual} 处文本",
+            metadata={
+                "changed_files": (relative,),
+                "replacement_count": actual,
+                "original_bytes": len(data),
+                "result_bytes": len(encoded),
+            },
+        )
 
 
 class ApplyPatchTool:
@@ -273,3 +384,21 @@ def _apply_hunks(source: str, file_patch: _FilePatch) -> str:
                 output.append(content)
     output.extend(source_lines[cursor:])
     return "".join(output)
+
+
+def _atomic_write(path: Path, content: bytes, mode: int) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=".sparrow-replace-",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)

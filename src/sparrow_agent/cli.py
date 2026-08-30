@@ -23,6 +23,7 @@ from sparrow_agent.tools import (
     ApplyPatchTool,
     ListFilesTool,
     ReadFileTool,
+    ReplaceTextTool,
     RunCommandTool,
     SearchFilesTool,
     ToolRegistry,
@@ -162,6 +163,7 @@ def _build_tool_registry(workspace: Workspace) -> ToolRegistry:
             ListFilesTool(workspace),
             ReadFileTool(workspace),
             SearchFilesTool(workspace),
+            ReplaceTextTool(workspace),
             ApplyPatchTool(workspace),
             RunCommandTool(workspace),
         ]

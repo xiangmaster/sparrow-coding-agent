@@ -16,6 +16,7 @@ from sparrow_agent.recording import MemoryRecorder
 from sparrow_agent.tools import (
     ApplyPatchTool,
     ReadFileTool,
+    ReplaceTextTool,
     RunCommandTool,
     ToolRegistry,
 )
@@ -63,6 +64,7 @@ def _real_registry(tmp_path: Path) -> ToolRegistry:
     return ToolRegistry(
         [
             ReadFileTool(workspace),
+            ReplaceTextTool(workspace),
             ApplyPatchTool(workspace),
             RunCommandTool(workspace),
         ]
@@ -154,6 +156,33 @@ def test_agent_rejects_premature_completion_then_allows_recovery(
     rejected_observation = json.loads(provider.requests[2].messages[-1].content)
     assert rejected_observation["ok"] is False
     assert "没有运行验证命令" in rejected_observation["error"]
+
+
+def test_agent_replace_text_participates_in_completion_evidence(tmp_path: Path) -> None:
+    (tmp_path / "value.txt").write_text("old\n", encoding="utf-8")
+    (tmp_path / "verify.py").write_text(
+        "from pathlib import Path\nassert Path('value.txt').read_text() == 'new\\n'\n",
+        encoding="utf-8",
+    )
+    command = ["python3", "verify.py"]
+    provider = ScriptedProvider(
+        [
+            _tool_response(
+                "replace",
+                "replace_text",
+                {"path": "value.txt", "old_text": "old\n", "new_text": "new\n"},
+            ),
+            _tool_response("verify", "run_command", {"command": command}),
+            _completion_response(["value.txt"], [command]),
+        ]
+    )
+
+    result = Agent(provider, _real_registry(tmp_path)).run("把 old 改为 new 并验证")
+
+    assert result.stop_reason is StopReason.COMPLETED
+    assert result.completion_request is not None
+    assert result.completion_request.changed_files == ("value.txt",)
+    assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "new\n"
 
 
 def test_agent_compacts_context_and_records_auditable_event(tmp_path: Path) -> None:
