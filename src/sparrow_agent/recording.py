@@ -57,6 +57,7 @@ class ReplaySummary:
     model_responses: int
     tool_results: int
     provider_retries: int
+    context_compactions: int
     stop_reason: str | None
 
     @property
@@ -69,6 +70,7 @@ class ReplaySummary:
             f"模型响应：{self.model_responses}",
             f"工具结果：{self.tool_results}",
             f"Provider 重试：{self.provider_retries}",
+            f"上下文压缩：{self.context_compactions}",
             f"终止原因：{self.stop_reason or '未知'}",
         ]
         return "\n".join(lines)
@@ -204,6 +206,9 @@ def replay_trace(path: str | Path) -> ReplaySummary:
         model_responses=sum(event.event == "model_response" for event in events),
         tool_results=sum(event.event == "tool_result" for event in events),
         provider_retries=sum(event.event == "provider_retry" for event in events),
+        context_compactions=sum(
+            event.event == "context_compacted" for event in events
+        ),
         stop_reason=stop_reason,
     )
 
@@ -314,6 +319,11 @@ def _human_event_line(event: RecordedEvent) -> str:
         detail = f"Provider 请求失败，准备第 {data.get('next_attempt', '?')} 次尝试"
     elif event.event == "control_feedback":
         detail = f"控制器反馈：{_one_line(data.get('feedback', ''))}"
+    elif event.event == "context_compacted":
+        detail = (
+            f"上下文压缩较早轮次 {data.get('newly_compacted_turns', '?')} 个，"
+            f"保留消息 {data.get('retained_messages', '?')} 条"
+        )
     elif event.event == "run_finished":
         detail = f"运行结束：{data.get('stop_reason', 'unknown')}"
     else:

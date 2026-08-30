@@ -12,6 +12,7 @@ from sparrow_agent.provider import (
     ScriptedProvider,
     TokenUsage,
 )
+from sparrow_agent.recording import MemoryRecorder
 from sparrow_agent.tools import (
     ApplyPatchTool,
     ReadFileTool,
@@ -153,6 +154,61 @@ def test_agent_rejects_premature_completion_then_allows_recovery(
     rejected_observation = json.loads(provider.requests[2].messages[-1].content)
     assert rejected_observation["ok"] is False
     assert "没有运行验证命令" in rejected_observation["error"]
+
+
+def test_agent_compacts_context_and_records_auditable_event(tmp_path: Path) -> None:
+    for index in range(4):
+        (tmp_path / f"file-{index}.txt").write_text(
+            f"value-{index}\n" + "x" * 240,
+            encoding="utf-8",
+        )
+    provider = ScriptedProvider(
+        [
+            _tool_response(
+                f"read-{index}",
+                "read_file",
+                {"path": f"file-{index}.txt"},
+                reasoning=f"读取第 {index} 个文件" + "r" * 220,
+            )
+            for index in range(4)
+        ]
+        + [_completion_response([], [])]
+    )
+    recorder = MemoryRecorder()
+    agent = Agent(
+        provider,
+        _real_registry(tmp_path),
+        settings=AgentSettings(max_context_characters=1_200),
+        recorder=recorder,
+    )
+
+    result = agent.run("依次检查四个文件并总结")
+
+    assert result.stop_reason is StopReason.COMPLETED
+    events = [event for event in recorder.events if event.event == "context_compacted"]
+    assert events
+    assert events[-1].data["total_compacted_turns"] >= 1
+    assert events[-1].data["estimated_characters"] <= 1_200
+    final_request = provider.requests[-1].messages
+    assert any(
+        message.role is MessageRole.SYSTEM
+        and message.content is not None
+        and "较早历史事实摘要" in message.content
+        for message in final_request
+    )
+
+    retained_call_ids = {
+        call.id
+        for message in final_request
+        if message.role is MessageRole.ASSISTANT
+        for call in message.tool_calls
+    }
+    retained_result_ids = {
+        message.tool_call_id
+        for message in final_request
+        if message.role is MessageRole.TOOL
+    }
+    assert retained_call_ids == retained_result_ids
 
 
 def test_agent_natural_language_answer_does_not_bypass_completion_gate() -> None:

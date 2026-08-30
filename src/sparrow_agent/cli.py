@@ -58,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--token-budget", type=int, default=200_000, help="单次运行累计 Token 上限"
     )
     run_parser.add_argument(
+        "--context-characters",
+        type=int,
+        default=120_000,
+        help="发送给模型的近似消息上下文字符上限",
+    )
+    run_parser.add_argument(
         "--no-record", action="store_true", help="不写入 .sparrow/runs 运行轨迹"
     )
     run_parser.set_defaults(handler=_run_command)
@@ -95,6 +101,7 @@ def _run_command(arguments: argparse.Namespace) -> int:
     agent_settings = AgentSettings(
         max_iterations=arguments.max_iterations,
         max_total_tokens=arguments.token_budget,
+        max_context_characters=arguments.context_characters,
     )
     registry = _build_tool_registry(workspace)
     provider = DeepSeekProvider(provider_settings)
@@ -199,6 +206,12 @@ class _ConsoleRecorder:
             message = f"[重试] Provider 第 {data.get('next_attempt', '?')} 次尝试"
         elif event == "control_feedback":
             message = "[控制器] 模型尚未提交结构化完成申请"
+        elif event == "context_compacted":
+            message = (
+                "[上下文] 已压缩 "
+                f"{data.get('newly_compacted_turns', '?')} 个较早轮次，"
+                f"保留 {data.get('retained_messages', '?')} 条消息"
+            )
         if message is not None:
             print(message, file=self._stream, flush=True)
 

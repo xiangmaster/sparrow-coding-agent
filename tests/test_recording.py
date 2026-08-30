@@ -114,6 +114,10 @@ def test_replay_validates_and_summarizes_without_modifying_trace(tmp_path: Path)
         recorder.record("run_started", {"task": "任务"})
         recorder.record("model_response", {"iteration": 1, "tool_call_count": 1})
         recorder.record("provider_retry", {"next_attempt": 2})
+        recorder.record(
+            "context_compacted",
+            {"newly_compacted_turns": 2, "retained_messages": 5},
+        )
         recorder.record("tool_result", {"tool_name": "read_file", "ok": True})
         recorder.record("run_finished", {"stop_reason": "completed"})
         path = recorder.jsonl_path
@@ -125,6 +129,8 @@ def test_replay_validates_and_summarizes_without_modifying_trace(tmp_path: Path)
     assert summary.model_responses == 1
     assert summary.tool_results == 1
     assert summary.provider_retries == 1
+    assert summary.context_compactions == 1
+    assert "上下文压缩：1" in summary.to_text()
     assert "终止原因：completed" in summary.to_text()
     assert path.read_bytes() == before
 

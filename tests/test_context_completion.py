@@ -73,6 +73,76 @@ def test_context_rejects_wrong_roles_and_empty_feedback() -> None:
         context.append_control_feedback(" ")
 
 
+def test_context_compacts_old_turns_without_splitting_recent_tool_chain() -> None:
+    context = Context(
+        "系统规则",
+        "用户任务",
+        max_observation_characters=500,
+        max_context_characters=1_200,
+        max_summary_characters=300,
+    )
+    for index in range(4):
+        call = ToolCall(
+            id=f"call-{index}",
+            name="read_file",
+            arguments={"path": f"file-{index}.txt"},
+        )
+        context.append_assistant(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=None,
+                reasoning_content=f"第 {index} 轮推理" + "r" * 120,
+                tool_calls=(call,),
+            )
+        )
+        context.append_tool_result(
+            call,
+            ToolResult.success(
+                "x" * 260,
+                metadata={"path": f"file-{index}.txt"},
+            ),
+        )
+
+    messages = context.messages
+
+    assert messages[0].role is MessageRole.SYSTEM
+    assert messages[1].role is MessageRole.USER
+    assert context.compacted_turns >= 1
+    assert context.estimated_characters <= 1_200
+    assert "系统规则" in (messages[0].content or "")
+    assert "较早历史事实摘要" in (messages[0].content or "")
+    assert "工具 read_file：成功" in (messages[0].content or "")
+    assert messages[-2].reasoning_content is not None
+    assert "第 3 轮推理" in messages[-2].reasoning_content
+    assert messages[-1].tool_call_id == "call-3"
+
+    retained_call_ids = {
+        call.id
+        for message in messages
+        if message.role is MessageRole.ASSISTANT
+        for call in message.tool_calls
+    }
+    retained_result_ids = {
+        message.tool_call_id
+        for message in messages
+        if message.role is MessageRole.TOOL
+    }
+    assert retained_call_ids == retained_result_ids
+    assert "call-0" not in retained_call_ids
+
+
+def test_context_validates_total_and_summary_budgets() -> None:
+    with pytest.raises(ValueError, match="上下文字符预算"):
+        Context("系统", "任务", max_context_characters=499)
+    with pytest.raises(ValueError, match="摘要字符上限"):
+        Context(
+            "系统",
+            "任务",
+            max_context_characters=500,
+            max_summary_characters=500,
+        )
+
+
 def test_evidence_ledger_tracks_mutation_and_post_mutation_verification() -> None:
     ledger = EvidenceLedger()
     patch_call = ToolCall(id="1", name="apply_patch")

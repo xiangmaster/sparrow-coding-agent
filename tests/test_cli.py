@@ -215,3 +215,11 @@ def test_version_is_available_without_subcommand(capsys: pytest.CaptureFixture[s
 
     assert caught.value.code == 0
     assert "Sparrow 0.1.0" in capsys.readouterr().out
+
+
+def test_run_parser_exposes_context_character_budget() -> None:
+    arguments = cli.build_parser().parse_args(
+        ["run", "任务", "--context-characters", "8000"]
+    )
+
+    assert arguments.context_characters == 8000

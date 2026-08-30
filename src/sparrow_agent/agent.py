@@ -37,6 +37,7 @@ class AgentSettings:
     provider_retries: int = 2
     retry_base_seconds: float = 0.5
     max_observation_characters: int = 30_000
+    max_context_characters: int = 120_000
 
     def __post_init__(self) -> None:
         if self.max_iterations < 1:
@@ -51,6 +52,8 @@ class AgentSettings:
             raise ValueError("retry_base_seconds 不能为负数")
         if self.max_observation_characters < 100:
             raise ValueError("max_observation_characters 不能小于 100")
+        if self.max_context_characters < 500:
+            raise ValueError("max_context_characters 不能小于 500")
 
 
 class Agent:
@@ -83,16 +86,19 @@ class Agent:
         )
         self.last_context: Context | None = None
         self.last_evidence: EvidenceLedger | None = None
+        self._reported_compacted_turns = 0
 
     def run(self, task: str) -> AgentResult:
         context = Context(
             self._system_prompt,
             task,
             max_observation_characters=self._settings.max_observation_characters,
+            max_context_characters=self._settings.max_context_characters,
         )
         evidence = EvidenceLedger()
         self.last_context = context
         self.last_evidence = evidence
+        self._reported_compacted_turns = 0
         total_tokens = 0
         last_action_signature: str | None = None
         repeated_actions = 0
@@ -103,6 +109,7 @@ class Agent:
                 "task": task,
                 "max_iterations": self._settings.max_iterations,
                 "max_total_tokens": self._settings.max_total_tokens,
+                "max_context_characters": self._settings.max_context_characters,
             },
         )
 
@@ -252,9 +259,27 @@ class Agent:
     def _request_model(
         self, context: Context, iteration: int
     ) -> ModelResponse | ProviderError:
+        messages = context.messages
+        if context.compacted_turns > self._reported_compacted_turns:
+            newly_compacted = (
+                context.compacted_turns - self._reported_compacted_turns
+            )
+            self._recorder.record(
+                "context_compacted",
+                {
+                    "iteration": iteration,
+                    "newly_compacted_turns": newly_compacted,
+                    "total_compacted_turns": context.compacted_turns,
+                    "retained_messages": len(messages),
+                    "estimated_characters": context.estimated_characters,
+                    "summary_characters": context.summary_characters,
+                    "max_context_characters": self._settings.max_context_characters,
+                },
+            )
+            self._reported_compacted_turns = context.compacted_turns
         for attempt in range(self._settings.provider_retries + 1):
             try:
-                return self._provider.complete(context.messages, self._model_tools)
+                return self._provider.complete(messages, self._model_tools)
             except ProviderRequestError as exc:
                 if not exc.retryable or attempt == self._settings.provider_retries:
                     self._recorder.record(
