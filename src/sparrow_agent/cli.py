@@ -21,9 +21,12 @@ from sparrow_agent.recording import (
 )
 from sparrow_agent.tools import (
     ApplyPatchTool,
+    CreateDirectoryTool,
+    DeleteFileTool,
     ListFilesTool,
     ReadFileTool,
     ReplaceTextTool,
+    RenameFileTool,
     RunCommandTool,
     SearchFilesTool,
     ToolRegistry,
@@ -127,6 +130,7 @@ def _run_command(arguments: argparse.Namespace) -> int:
             registry,
             settings=agent_settings,
             recorder=recorder,
+            workspace=workspace,
         ).run(task)
     except KeyboardInterrupt:
         recorder.record(
@@ -163,8 +167,11 @@ def _build_tool_registry(workspace: Workspace) -> ToolRegistry:
             ListFilesTool(workspace),
             ReadFileTool(workspace),
             SearchFilesTool(workspace),
+            CreateDirectoryTool(workspace),
             ReplaceTextTool(workspace),
             ApplyPatchTool(workspace),
+            RenameFileTool(workspace),
+            DeleteFileTool(workspace),
             RunCommandTool(workspace),
         ]
     )
@@ -214,6 +221,9 @@ class _ConsoleRecorder:
                 f"{data.get('newly_compacted_turns', '?')} 个较早轮次，"
                 f"保留 {data.get('retained_messages', '?')} 条消息"
             )
+        elif event == "workspace_changed":
+            count = len(data.get("changed_since_previous_snapshot", ()))
+            message = f"[工作区] 完成申请前发现 {count} 个文件发生额外变化"
         if message is not None:
             print(message, file=self._stream, flush=True)
 

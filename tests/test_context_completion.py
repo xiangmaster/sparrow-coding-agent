@@ -1,6 +1,7 @@
 """上下文、证据账本和完成门测试。"""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +9,7 @@ from sparrow_agent.completion import CompletionGate
 from sparrow_agent.context import Context
 from sparrow_agent.evidence import EvidenceLedger
 from sparrow_agent.models import Message, MessageRole, ToolCall, ToolResult
+from sparrow_agent.workspace import Workspace
 
 
 def _completion_call(
@@ -171,6 +173,74 @@ def test_evidence_ledger_tracks_mutation_and_post_mutation_verification() -> Non
     assert ledger.last_mutation_index == 2
     assert len(ledger.verifications_after_last_mutation()) == 1
     assert ledger.verifications_after_last_mutation()[0].exit_code == 1
+
+
+def test_evidence_ledger_uses_snapshot_diff_and_invalidates_same_event_verification(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "value.txt"
+    target.write_text("old\n", encoding="utf-8")
+    workspace = Workspace(tmp_path)
+    ledger = EvidenceLedger(baseline_snapshot=workspace.snapshot())
+
+    target.write_text("new\n", encoding="utf-8")
+    ledger.record(
+        ToolCall(id="format", name="run_command"),
+        ToolResult.success(
+            "formatted",
+            metadata={"command": ["formatter"], "exit_code": 0},
+        ),
+        workspace.snapshot(),
+    )
+
+    assert ledger.changed_files == {"value.txt"}
+    assert ledger.last_observed_changes == {"value.txt"}
+    assert ledger.verifications_after_last_mutation() == ()
+
+    target.write_text("old\n", encoding="utf-8")
+    ledger.record(
+        ToolCall(id="restore", name="run_command"),
+        ToolResult.success(
+            "restored",
+            metadata={"command": ["restore"], "exit_code": 0},
+        ),
+        workspace.snapshot(),
+    )
+
+    assert ledger.changed_files == set()
+    assert ledger.reported_changed_files == set()
+
+
+def test_evidence_ledger_observes_change_after_successful_verification(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "value.txt"
+    target.write_text("old\n", encoding="utf-8")
+    workspace = Workspace(tmp_path)
+    ledger = EvidenceLedger(baseline_snapshot=workspace.snapshot())
+
+    target.write_text("new\n", encoding="utf-8")
+    ledger.record(
+        ToolCall(id="edit", name="apply_patch"),
+        ToolResult.success("changed", metadata={"changed_files": ["value.txt"]}),
+        workspace.snapshot(),
+    )
+    ledger.record(
+        ToolCall(id="verify", name="run_command"),
+        ToolResult.success(
+            "passed", metadata={"command": ["pytest"], "exit_code": 0}
+        ),
+        workspace.snapshot(),
+    )
+    assert len(ledger.verifications_after_last_mutation()) == 1
+
+    (tmp_path / "late.txt").write_text("late\n", encoding="utf-8")
+    event_index, changes = ledger.observe_snapshot(workspace.snapshot())
+
+    assert event_index == 3
+    assert changes == {"late.txt"}
+    assert ledger.changed_files == {"value.txt", "late.txt"}
+    assert ledger.verifications_after_last_mutation() == ()
 
 
 def test_completion_gate_accepts_information_only_task_without_fake_evidence() -> None:

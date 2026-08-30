@@ -129,3 +129,48 @@ def test_resolve_allows_safe_environment_templates(
     target.write_text("API_KEY=replace-me", encoding="utf-8")
 
     assert Workspace(tmp_path).resolve_file(filename) == target
+
+
+def test_workspace_snapshot_detects_content_mode_addition_and_deletion(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "main.py"
+    removed = tmp_path / "old.txt"
+    target.write_text("value = 1\n", encoding="utf-8")
+    removed.write_text("old\n", encoding="utf-8")
+    workspace = Workspace(tmp_path)
+    before = workspace.snapshot()
+
+    target.write_text("value = 2\n", encoding="utf-8")
+    target.chmod(0o744)
+    removed.unlink()
+    (tmp_path / "new.txt").write_text("new\n", encoding="utf-8")
+    after = workspace.snapshot()
+
+    assert before.changed_paths(after) == {"main.py", "old.txt", "new.txt"}
+
+
+def test_workspace_snapshot_excludes_sensitive_dependencies_caches_and_links(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "visible.py").write_text("print('ok')\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=value\n", encoding="utf-8")
+    (tmp_path / ".coverage").write_text("noise\n", encoding="utf-8")
+    for directory in (
+        ".git",
+        ".sparrow",
+        ".venv",
+        "node_modules",
+        "__pycache__",
+        "htmlcov",
+    ):
+        path = tmp_path / directory
+        path.mkdir()
+        (path / "ignored.txt").write_text("noise\n", encoding="utf-8")
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside\n", encoding="utf-8")
+    (tmp_path / "link.txt").symlink_to(outside)
+
+    snapshot = Workspace(tmp_path).snapshot()
+
+    assert snapshot.files == {"visible.py"}

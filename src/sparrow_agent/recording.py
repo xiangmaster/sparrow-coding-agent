@@ -324,6 +324,10 @@ def _human_event_line(event: RecordedEvent) -> str:
             f"上下文压缩较早轮次 {data.get('newly_compacted_turns', '?')} 个，"
             f"保留消息 {data.get('retained_messages', '?')} 条"
         )
+    elif event.event == "workspace_changed":
+        paths = data.get("changed_since_previous_snapshot", ())
+        count = len(paths) if isinstance(paths, (list, tuple)) else "?"
+        detail = f"完成申请前发现工作区额外变化 {count} 项"
     elif event.event == "run_finished":
         detail = f"运行结束：{data.get('stop_reason', 'unknown')}"
     else:

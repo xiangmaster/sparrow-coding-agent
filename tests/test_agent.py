@@ -15,8 +15,10 @@ from sparrow_agent.provider import (
 from sparrow_agent.recording import MemoryRecorder
 from sparrow_agent.tools import (
     ApplyPatchTool,
+    DeleteFileTool,
     ReadFileTool,
     ReplaceTextTool,
+    RenameFileTool,
     RunCommandTool,
     ToolRegistry,
 )
@@ -107,7 +109,9 @@ sys.exit(0 if value == 'final' else 1)
             _completion_response(["value.txt"], [command]),
         ]
     )
-    agent = Agent(provider, _real_registry(tmp_path))
+    agent = Agent(
+        provider, _real_registry(tmp_path), workspace=Workspace(tmp_path)
+    )
 
     result = agent.run("把 value.txt 修改为 final，并运行验证。")
 
@@ -150,7 +154,9 @@ def test_agent_rejects_premature_completion_then_allows_recovery(
         ]
     )
 
-    result = Agent(provider, _real_registry(tmp_path)).run("修改并验证")
+    result = Agent(
+        provider, _real_registry(tmp_path), workspace=Workspace(tmp_path)
+    ).run("修改并验证")
 
     assert result.stop_reason is StopReason.COMPLETED
     rejected_observation = json.loads(provider.requests[2].messages[-1].content)
@@ -177,12 +183,149 @@ def test_agent_replace_text_participates_in_completion_evidence(tmp_path: Path) 
         ]
     )
 
-    result = Agent(provider, _real_registry(tmp_path)).run("把 old 改为 new 并验证")
+    result = Agent(
+        provider, _real_registry(tmp_path), workspace=Workspace(tmp_path)
+    ).run("把 old 改为 new 并验证")
 
     assert result.stop_reason is StopReason.COMPLETED
     assert result.completion_request is not None
     assert result.completion_request.changed_files == ("value.txt",)
     assert (tmp_path / "value.txt").read_text(encoding="utf-8") == "new\n"
+
+
+def test_agent_detects_command_side_effect_and_requires_later_verification(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "value.txt").write_text("old\n", encoding="utf-8")
+    (tmp_path / "format.py").write_text(
+        "from pathlib import Path\nPath('value.txt').write_text('new\\n')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "verify.py").write_text(
+        "from pathlib import Path\nassert Path('value.txt').read_text() == 'new\\n'\n",
+        encoding="utf-8",
+    )
+    format_command = ["python3", "format.py"]
+    verify_command = ["python3", "verify.py"]
+    provider = ScriptedProvider(
+        [
+            _tool_response("format", "run_command", {"command": format_command}),
+            _completion_response(["value.txt"], [format_command]),
+            _tool_response("verify", "run_command", {"command": verify_command}),
+            _completion_response(["value.txt"], [verify_command]),
+        ]
+    )
+    agent = Agent(
+        provider, _real_registry(tmp_path), workspace=Workspace(tmp_path)
+    )
+
+    result = agent.run("运行格式化脚本修改文件并验证")
+
+    assert result.stop_reason is StopReason.COMPLETED
+    assert result.completion_request is not None
+    assert result.completion_request.changed_files == ("value.txt",)
+    first_command_observation = json.loads(provider.requests[1].messages[-1].content)
+    assert first_command_observation["metadata"]["workspace_changed_files"] == [
+        "value.txt"
+    ]
+    rejected_completion = json.loads(provider.requests[2].messages[-1].content)
+    assert "最后一次修改之后没有运行验证" in rejected_completion["error"]
+
+
+def test_agent_refreshes_snapshot_before_completion_and_records_late_change(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "value.txt").write_text("old\n", encoding="utf-8")
+    (tmp_path / "verify.py").write_text("print('ok')\n", encoding="utf-8")
+    command = ["python3", "verify.py"]
+
+    class LateMutatingProvider(ScriptedProvider):
+        def complete(self, messages, tools=()):
+            if len(self.requests) == 2:
+                (tmp_path / "late.txt").write_text("late\n", encoding="utf-8")
+            return super().complete(messages, tools)
+
+    provider = LateMutatingProvider(
+        [
+            _tool_response(
+                "replace",
+                "replace_text",
+                {"path": "value.txt", "old_text": "old\n", "new_text": "new\n"},
+            ),
+            _tool_response("verify-1", "run_command", {"command": command}),
+            _completion_response(["value.txt"], [command]),
+            _tool_response("verify-2", "run_command", {"command": command}),
+            _completion_response(["late.txt", "value.txt"], [command]),
+        ]
+    )
+    recorder = MemoryRecorder()
+    agent = Agent(
+        provider,
+        _real_registry(tmp_path),
+        workspace=Workspace(tmp_path),
+        recorder=recorder,
+    )
+
+    result = agent.run("修改文件并确保完成前没有额外变化")
+
+    assert result.stop_reason is StopReason.COMPLETED
+    assert result.completion_request is not None
+    assert set(result.completion_request.changed_files) == {"late.txt", "value.txt"}
+    snapshot_events = [
+        event for event in recorder.events if event.event == "workspace_changed"
+    ]
+    assert len(snapshot_events) == 1
+    assert snapshot_events[0].data["changed_since_previous_snapshot"] == [
+        "late.txt"
+    ]
+    rejected = json.loads(provider.requests[3].messages[-1].content)
+    assert "未声明实际修改文件：late.txt" in rejected["error"]
+    assert "最后一次修改之后没有运行验证" in rejected["error"]
+
+
+def test_agent_snapshot_accepts_rename_and_delete_as_real_changes(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "old.txt").write_text("keep\n", encoding="utf-8")
+    (tmp_path / "obsolete.txt").write_text("remove\n", encoding="utf-8")
+    (tmp_path / "verify.py").write_text(
+        """from pathlib import Path
+assert not Path('old.txt').exists()
+assert Path('new.txt').read_text() == 'keep\\n'
+assert not Path('obsolete.txt').exists()
+""",
+        encoding="utf-8",
+    )
+    workspace = Workspace(tmp_path)
+    registry = ToolRegistry(
+        [
+            RenameFileTool(workspace),
+            DeleteFileTool(workspace),
+            RunCommandTool(workspace),
+        ]
+    )
+    command = ["python3", "verify.py"]
+    changed_files = ["new.txt", "obsolete.txt", "old.txt"]
+    provider = ScriptedProvider(
+        [
+            _tool_response(
+                "rename",
+                "rename_file",
+                {"source": "old.txt", "destination": "new.txt"},
+            ),
+            _tool_response(
+                "delete", "delete_file", {"path": "obsolete.txt"}
+            ),
+            _tool_response("verify", "run_command", {"command": command}),
+            _completion_response(changed_files, [command]),
+        ]
+    )
+
+    result = Agent(provider, registry, workspace=workspace).run("重命名并删除文件")
+
+    assert result.stop_reason is StopReason.COMPLETED
+    assert result.completion_request is not None
+    assert result.completion_request.changed_files == tuple(changed_files)
 
 
 def test_agent_compacts_context_and_records_auditable_event(tmp_path: Path) -> None:

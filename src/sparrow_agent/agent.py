@@ -20,6 +20,7 @@ from sparrow_agent.provider import (
 )
 from sparrow_agent.recording import EventRecorder, NullRecorder
 from sparrow_agent.tools import ToolRegistry
+from sparrow_agent.workspace import Workspace
 
 DEFAULT_SYSTEM_PROMPT = """你是 Sparrow，一个在本地工具边界内工作的编程智能体。
 先检查项目再修改；每次工具失败后根据观察调整，不要假装操作成功。
@@ -70,6 +71,7 @@ class Agent:
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         sleeper: Callable[[float], None] = time.sleep,
         recorder: EventRecorder | None = None,
+        workspace: Workspace | None = None,
     ) -> None:
         self._provider = provider
         self._tools = tools
@@ -78,6 +80,7 @@ class Agent:
         self._system_prompt = system_prompt
         self._sleeper = sleeper
         self._recorder = recorder or NullRecorder()
+        self._workspace = workspace
         schemas = tools.model_schemas()
         names = {schema["function"]["name"] for schema in schemas}
         if self._completion_gate.spec.name in names:
@@ -96,7 +99,10 @@ class Agent:
             max_observation_characters=self._settings.max_observation_characters,
             max_context_characters=self._settings.max_context_characters,
         )
-        evidence = EvidenceLedger()
+        baseline_snapshot = (
+            self._workspace.snapshot() if self._workspace is not None else None
+        )
+        evidence = EvidenceLedger(baseline_snapshot=baseline_snapshot)
         self.last_context = context
         self.last_evidence = evidence
         self._reported_compacted_turns = 0
@@ -111,6 +117,11 @@ class Agent:
                 "max_iterations": self._settings.max_iterations,
                 "max_total_tokens": self._settings.max_total_tokens,
                 "max_context_characters": self._settings.max_context_characters,
+                "snapshot_files": (
+                    len(baseline_snapshot.entries)
+                    if baseline_snapshot is not None
+                    else None
+                ),
             },
         )
 
@@ -194,6 +205,25 @@ class Agent:
 
             call = calls[0] if len(calls) == 1 else None
             if call is not None and call.name == self._completion_gate.spec.name:
+                if self._workspace is not None:
+                    snapshot_index, snapshot_changes = evidence.observe_snapshot(
+                        self._workspace.snapshot()
+                    )
+                    if snapshot_changes:
+                        self._recorder.record(
+                            "workspace_changed",
+                            {
+                                "iteration": iteration,
+                                "event_index": snapshot_index,
+                                "changed_since_previous_snapshot": sorted(
+                                    snapshot_changes
+                                ),
+                                "changed_since_run_start": sorted(
+                                    evidence.changed_files
+                                ),
+                                "source": "completion_refresh",
+                            },
+                        )
                 decision = self._completion_gate.evaluate(call, evidence)
                 context.append_tool_result(call, decision.result)
                 event_index = evidence.record(call, decision.result)
@@ -227,8 +257,15 @@ class Agent:
 
             for tool_call in calls:
                 result = self._tools.execute(tool_call)
+                snapshot = (
+                    self._workspace.snapshot()
+                    if self._workspace is not None
+                    else None
+                )
+                event_index = evidence.record(tool_call, result, snapshot)
+                if snapshot is not None:
+                    result = _with_workspace_evidence(result, evidence)
                 context.append_tool_result(tool_call, result)
-                event_index = evidence.record(tool_call, result)
                 self._record_tool_result(
                     iteration, event_index, tool_call, result
                 )
@@ -365,6 +402,24 @@ class Agent:
             },
         )
         return result
+
+
+def _with_workspace_evidence(
+    result: ToolResult, evidence: EvidenceLedger
+) -> ToolResult:
+    metadata = {
+        **result.metadata,
+        "workspace_changed_files": tuple(sorted(evidence.changed_files)),
+        "changed_since_previous_snapshot": tuple(
+            sorted(evidence.last_observed_changes)
+        ),
+    }
+    return ToolResult(
+        ok=result.ok,
+        output=result.output,
+        error=result.error,
+        metadata=metadata,
+    )
 
 
 def _tool_call_structure_error(calls: tuple[ToolCall, ...]) -> str | None:

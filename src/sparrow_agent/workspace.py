@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import stat
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -41,6 +44,44 @@ _BLOCKED_FILENAMES: Final[frozenset[str]] = frozenset(
 _SAFE_ENV_TEMPLATES: Final[frozenset[str]] = frozenset(
     {".env.example", ".env.sample", ".env.template"}
 )
+_SNAPSHOT_IGNORED_DIRECTORIES: Final[frozenset[str]] = frozenset(
+    {
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "__pycache__",
+        "build",
+        "dist",
+        "htmlcov",
+        "node_modules",
+    }
+)
+_SNAPSHOT_IGNORED_FILENAMES: Final[frozenset[str]] = frozenset(
+    {".coverage", ".DS_Store"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceSnapshot:
+    """一次确定性的工作区文件内容与权限摘要。"""
+
+    entries: tuple[tuple[str, str], ...]
+
+    @property
+    def files(self) -> frozenset[str]:
+        return frozenset(path for path, _ in self.entries)
+
+    def changed_paths(self, other: WorkspaceSnapshot) -> frozenset[str]:
+        """返回相对另一快照新增、删除或内容/权限发生变化的路径。"""
+
+        before = dict(self.entries)
+        after = dict(other.entries)
+        return frozenset(
+            path
+            for path in before.keys() | after.keys()
+            if before.get(path) != after.get(path)
+        )
 
 
 class Workspace:
@@ -113,6 +154,56 @@ class Workspace:
         """返回安全目标相对于工作区的路径。"""
 
         return self.resolve(path).relative_to(self._root)
+
+    def snapshot(self) -> WorkspaceSnapshot:
+        """摘要可操作项目文件，不跟随链接并排除凭据、依赖和运行噪声。"""
+
+        entries: list[tuple[str, str]] = []
+        self._snapshot_directory(self._root, entries)
+        return WorkspaceSnapshot(tuple(entries))
+
+    def _snapshot_directory(
+        self, directory: Path, entries: list[tuple[str, str]]
+    ) -> None:
+        try:
+            children = sorted(directory.iterdir(), key=lambda item: item.name)
+        except OSError as exc:
+            raise WorkspacePathError(f"无法遍历工作区目录：{directory}") from exc
+
+        for child in children:
+            if child.is_symlink():
+                continue
+            if child.name in _SNAPSHOT_IGNORED_FILENAMES:
+                continue
+            relative = child.relative_to(self._root)
+            if child.is_dir():
+                if (
+                    child.name in _BLOCKED_PARTS
+                    or child.name in _SNAPSHOT_IGNORED_DIRECTORIES
+                ):
+                    continue
+                try:
+                    safe_directory = self.resolve_directory(child)
+                except WorkspaceError:
+                    continue
+                self._snapshot_directory(safe_directory, entries)
+                continue
+            if not child.is_file():
+                continue
+            try:
+                safe_file = self.resolve_file(child)
+                relative = safe_file.relative_to(self._root)
+                file_stat = safe_file.stat()
+                digest = hashlib.sha256()
+                with safe_file.open("rb") as source:
+                    for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except WorkspaceError:
+                continue
+            except OSError as exc:
+                raise WorkspacePathError(f"无法摘要工作区文件：{relative}") from exc
+            fingerprint = f"{stat.S_IMODE(file_stat.st_mode):o}:{digest.hexdigest()}"
+            entries.append((relative.as_posix(), fingerprint))
 
     @staticmethod
     def _reject_sensitive(relative: Path) -> None:
