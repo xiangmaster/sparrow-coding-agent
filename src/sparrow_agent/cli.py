@@ -10,27 +10,16 @@ from typing import Any, TextIO
 
 from sparrow_agent import __version__
 from sparrow_agent.agent import Agent, AgentSettings
-from sparrow_agent.config import ConfigError, read_environment_file
+from sparrow_agent.config import ConfigError
 from sparrow_agent.models import AgentResult, StopReason
-from sparrow_agent.provider import DeepSeekProvider, DeepSeekSettings
+from sparrow_agent.provider import DeepSeekProvider
 from sparrow_agent.recording import (
     EventRecorder,
     RecordingError,
     RunRecorder,
     replay_trace,
 )
-from sparrow_agent.tools import (
-    ApplyPatchTool,
-    CreateDirectoryTool,
-    DeleteFileTool,
-    ListFilesTool,
-    ReadFileTool,
-    ReplaceTextTool,
-    RenameFileTool,
-    RunCommandTool,
-    SearchFilesTool,
-    ToolRegistry,
-)
+from sparrow_agent.runtime import FanoutRecorder, build_tool_registry, load_provider_settings
 from sparrow_agent.workspace import Workspace, WorkspaceError
 
 _INCOMPLETE_EXIT_CODE = 3
@@ -96,18 +85,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _run_command(arguments: argparse.Namespace) -> int:
     workspace = Workspace(arguments.workspace)
-    environment = read_environment_file(workspace.root / ".env")
-    if arguments.model:
-        environment["SPARROW_MODEL"] = arguments.model
-    if arguments.reasoning_effort:
-        environment["SPARROW_REASONING_EFFORT"] = arguments.reasoning_effort
-    provider_settings = DeepSeekSettings.from_environment(environment)
+    provider_settings = load_provider_settings(
+        workspace,
+        model=arguments.model,
+        reasoning_effort=arguments.reasoning_effort,
+    )
     agent_settings = AgentSettings(
         max_iterations=arguments.max_iterations,
         max_total_tokens=arguments.token_budget,
         max_context_characters=arguments.context_characters,
     )
-    registry = _build_tool_registry(workspace)
+    registry = build_tool_registry(workspace)
     provider = DeepSeekProvider(provider_settings)
     task = " ".join(arguments.task).strip()
 
@@ -116,7 +104,7 @@ def _run_command(arguments: argparse.Namespace) -> int:
     recorder: EventRecorder = console_recorder
     if not arguments.no_record:
         disk_recorder = RunRecorder(workspace.root)
-        recorder = _FanoutRecorder((console_recorder, disk_recorder))
+        recorder = FanoutRecorder((console_recorder, disk_recorder))
 
     print(f"工作区：{workspace.root}")
     print(f"模型：{provider_settings.model}（{provider_settings.reasoning_effort}）")
@@ -159,22 +147,6 @@ def _replay_command(arguments: argparse.Namespace) -> int:
         for event in summary.events:
             print(f"{event.sequence:04d}  {event.event}")
     return 0
-
-
-def _build_tool_registry(workspace: Workspace) -> ToolRegistry:
-    return ToolRegistry(
-        [
-            ListFilesTool(workspace),
-            ReadFileTool(workspace),
-            SearchFilesTool(workspace),
-            CreateDirectoryTool(workspace),
-            ReplaceTextTool(workspace),
-            ApplyPatchTool(workspace),
-            RenameFileTool(workspace),
-            DeleteFileTool(workspace),
-            RunCommandTool(workspace),
-        ]
-    )
 
 
 def _print_result(result: AgentResult) -> None:
@@ -226,12 +198,3 @@ class _ConsoleRecorder:
             message = f"[工作区] 完成申请前发现 {count} 个文件发生额外变化"
         if message is not None:
             print(message, file=self._stream, flush=True)
-
-
-class _FanoutRecorder:
-    def __init__(self, recorders: Sequence[EventRecorder]) -> None:
-        self._recorders = tuple(recorders)
-
-    def record(self, event: str, data: Mapping[str, Any]) -> None:
-        for recorder in self._recorders:
-            recorder.record(event, data)

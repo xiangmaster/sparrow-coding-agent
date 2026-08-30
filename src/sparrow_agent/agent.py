@@ -72,6 +72,7 @@ class Agent:
         sleeper: Callable[[float], None] = time.sleep,
         recorder: EventRecorder | None = None,
         workspace: Workspace | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self._provider = provider
         self._tools = tools
@@ -81,6 +82,7 @@ class Agent:
         self._sleeper = sleeper
         self._recorder = recorder or NullRecorder()
         self._workspace = workspace
+        self._is_cancelled = is_cancelled or (lambda: False)
         schemas = tools.model_schemas()
         names = {schema["function"]["name"] for schema in schemas}
         if self._completion_gate.spec.name in names:
@@ -124,9 +126,15 @@ class Agent:
                 ),
             },
         )
+        if self._is_cancelled():
+            return self._finish(_cancelled_result(0))
 
         for iteration in range(1, self._settings.max_iterations + 1):
+            if self._is_cancelled():
+                return self._finish(_cancelled_result(iteration - 1))
             response_or_error = self._request_model(context, iteration)
+            if self._is_cancelled():
+                return self._finish(_cancelled_result(iteration))
             if isinstance(response_or_error, ProviderError):
                 return self._finish(
                     AgentResult(
@@ -256,6 +264,8 @@ class Agent:
                 continue
 
             for tool_call in calls:
+                if self._is_cancelled():
+                    return self._finish(_cancelled_result(iteration))
                 result = self._tools.execute(tool_call)
                 snapshot = (
                     self._workspace.snapshot()
@@ -455,5 +465,13 @@ def _repeated_result(iteration: int) -> AgentResult:
     return AgentResult(
         stop_reason=StopReason.REPEATED_ACTION,
         final_text="检测到连续重复且结果相同的工具调用，已触发熔断",
+        iterations=iteration,
+    )
+
+
+def _cancelled_result(iteration: int) -> AgentResult:
+    return AgentResult(
+        stop_reason=StopReason.CANCELLED,
+        final_text="运行已收到取消请求，并在安全检查点停止",
         iterations=iteration,
     )

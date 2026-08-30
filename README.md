@@ -46,6 +46,10 @@ Chat Completions API 访问。开发阶段可切换至 DeepSeek-V4-Flash，
 `.sparrow/runs/`，文件权限为 `0600`。轨迹包含用户任务、模型响应、
 `reasoning_content` 和工具输出，便于复盘但也可能含有项目敏感信息，请勿随意分享。
 
+桌面端正在按“共享运行时—会话控制—Qt 界面”三层推进。CLI 与 GUI 将复用同一个
+Agent、工具注册表、配置加载和证据门；GUI 不启动另一套服务，也不解析终端文本。
+界面方案与交互边界见 [GUI_DESIGN.md](GUI_DESIGN.md)。
+
 ## 安装与使用
 
 项目要求 Python 3.11 及以上：
@@ -55,6 +59,20 @@ python3.13 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 cp -n .env.example .env
 ```
+
+开发桌面端时额外安装 GUI 依赖：
+
+```bash
+.venv/bin/pip install -e '.[dev,gui]'
+```
+
+随后启动原生桌面应用：
+
+```bash
+.venv/bin/sparrow-gui
+```
+
+桌面端与 CLI 读取同一个工作区 `.env`，不会把 API Key 保存到界面配置中。
 
 在本地 `.env` 中填写 `DEEPSEEK_API_KEY`，随后运行：
 

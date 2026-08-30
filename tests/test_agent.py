@@ -447,6 +447,33 @@ def test_agent_stops_on_terminal_provider_error() -> None:
     assert "服务不可用" in result.final_text
 
 
+def test_agent_honours_cancellation_before_first_provider_request() -> None:
+    provider = ScriptedProvider([_completion_response([], [])])
+    agent = Agent(provider, ToolRegistry(), is_cancelled=lambda: True)
+
+    result = agent.run("任务")
+
+    assert result.stop_reason is StopReason.CANCELLED
+    assert result.iterations == 0
+    assert provider.requests == []
+
+
+def test_agent_honours_cancellation_after_provider_returns() -> None:
+    provider = ScriptedProvider([_completion_response([], [])])
+    checks = iter((False, False, True))
+    agent = Agent(
+        provider,
+        ToolRegistry(),
+        is_cancelled=lambda: next(checks),
+    )
+
+    result = agent.run("任务")
+
+    assert result.stop_reason is StopReason.CANCELLED
+    assert result.iterations == 1
+    assert len(provider.requests) == 1
+
+
 def test_agent_stops_before_tools_when_token_budget_is_exceeded() -> None:
     response = _tool_response(
         "unknown", "unknown_tool", {}, usage=11
