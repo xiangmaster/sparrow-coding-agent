@@ -14,18 +14,19 @@ ApplicationWindow {
     title: "Sparrow Agent"
     color: ink
 
-    readonly property color ink: "#15151A"
-    readonly property color inkRaised: "#1C1C23"
-    readonly property color inkSoft: "#24242D"
-    readonly property color paper: "#F3F0EA"
-    readonly property color paperRaised: "#FBF9F5"
-    readonly property color textPrimary: "#222127"
-    readonly property color textSecondary: "#726F78"
-    readonly property color line: "#DDD8CF"
-    readonly property color purple: "#6E4BC6"
-    readonly property color purpleSoft: "#EAE3FA"
-    readonly property color jade: "#24856F"
-    readonly property color jadeSoft: "#DCEFE8"
+    readonly property color ink: "#07171B"
+    readonly property color inkRaised: "#0D2024"
+    readonly property color inkSoft: "#142A2D"
+    readonly property color paper: "#F2F5F1"
+    readonly property color paperRaised: "#FBFCF9"
+    readonly property color textPrimary: "#182522"
+    readonly property color textSecondary: "#687772"
+    readonly property color line: "#D7E0DB"
+    readonly property color brand: "#118F79"
+    readonly property color brandBright: "#54D7B2"
+    readonly property color brandSoft: "#DDF3EB"
+    readonly property color jade: "#247D69"
+    readonly property color jadeSoft: "#DDF0E9"
     readonly property color vermilion: "#C7523D"
     readonly property color amber: "#C58A36"
 
@@ -36,19 +37,19 @@ ApplicationWindow {
         if (tone === "error") return vermilion
         if (tone === "warning") return amber
         if (tone === "muted") return textSecondary
-        return purple
+        return brand
     }
 
     function stateColor(key) {
         if (key === "completed") return jade
-        if (key === "running" || key === "cancelling") return purple
+        if (key === "running" || key === "cancelling") return brand
         if (key === "idle") return textSecondary
         return vermilion
     }
 
     component FlatButton: Button {
         id: control
-        property color accent: root.purple
+        property color accent: root.brand
         property bool filled: false
         implicitHeight: 40
         leftPadding: 15
@@ -82,6 +83,16 @@ ApplicationWindow {
     component Divider: Rectangle {
         implicitHeight: 1
         color: root.line
+    }
+
+    component BrandMark: Item {
+        Image {
+            anchors.fill: parent
+            source: "assets/logo-mark.svg"
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            mipmap: true
+        }
     }
 
     FolderDialog {
@@ -164,7 +175,7 @@ ApplicationWindow {
                 text: controller.previews.length > selectedPreview
                       ? controller.previews[selectedPreview].text : ""
                 color: "#D9D5E0"
-                selectionColor: root.purple
+                selectionColor: root.brand
                 font.family: "Menlo"
                 font.pixelSize: 12
                 background: null
@@ -249,21 +260,9 @@ ApplicationWindow {
             anchors.rightMargin: 24
             spacing: 14
 
-            Item {
-                Layout.preferredWidth: 28
-                Layout.preferredHeight: 28
-                Rectangle {
-                    x: 1; y: 5; width: 19; height: 5; radius: 2.5
-                    color: root.purple; rotation: -26
-                }
-                Rectangle {
-                    x: 8; y: 13; width: 18; height: 5; radius: 2.5
-                    color: "#A58AE7"; rotation: 24
-                }
-                Rectangle {
-                    x: 4; y: 18; width: 13; height: 4; radius: 2
-                    color: root.jade; rotation: -18
-                }
+            BrandMark {
+                Layout.preferredWidth: 36
+                Layout.preferredHeight: 36
             }
             Text {
                 text: "SPARROW"
@@ -293,9 +292,9 @@ ApplicationWindow {
                     verticalAlignment: Text.AlignVCenter
                 }
                 background: Rectangle {
-                    color: workspaceButton.hovered ? "#2C2B34" : "#222129"
+                    color: workspaceButton.hovered ? "#163136" : "#10262A"
                     radius: 8
-                    border.color: "#3B3944"
+                    border.color: "#25464A"
                 }
                 implicitWidth: 190
                 implicitHeight: 36
@@ -313,7 +312,7 @@ ApplicationWindow {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
-                background: Rectangle { color: parent.hovered ? "#2C2B34" : "transparent"; radius: 8 }
+                background: Rectangle { color: parent.hovered ? "#163136" : "transparent"; radius: 8 }
                 implicitWidth: 62
                 implicitHeight: 36
             }
@@ -380,7 +379,7 @@ ApplicationWindow {
                     }
                     background: Rectangle {
                         radius: 10
-                        color: newTaskButton.hovered ? "#7B58D4" : root.purple
+                        color: newTaskButton.hovered ? "#0C7867" : root.brand
                         opacity: newTaskButton.enabled ? 1 : 0.45
                     }
                 }
@@ -420,7 +419,7 @@ ApplicationWindow {
                         width: historyList.width
                         height: 60
                         radius: 9
-                        color: historyMouse.containsMouse ? "#292832" : "transparent"
+                        color: historyMouse.containsMouse ? "#163034" : "transparent"
                         border.color: "transparent"
                         RowLayout {
                             anchors.fill: parent
@@ -479,7 +478,7 @@ ApplicationWindow {
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#302F38" }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: "#20383B" }
                 Text {
                     Layout.fillWidth: true
                     text: "轨迹可能包含代码，仅保存在本机"
@@ -506,12 +505,9 @@ ApplicationWindow {
                     width: Math.min(parent.width - 120, 760)
                     spacing: 18
 
-                    Item {
+                    BrandMark {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        width: 76; height: 55
-                        Rectangle { x: 5; y: 10; width: 48; height: 9; radius: 5; color: root.purple; rotation: -24 }
-                        Rectangle { x: 24; y: 27; width: 45; height: 9; radius: 5; color: "#A58AE7"; rotation: 22 }
-                        Rectangle { x: 14; y: 38; width: 31; height: 7; radius: 4; color: root.jade; rotation: -16 }
+                        width: 104; height: 104
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
@@ -531,7 +527,7 @@ ApplicationWindow {
                         height: 184
                         radius: 16
                         color: root.paperRaised
-                        border.color: homeTask.activeFocus ? root.purple : root.line
+                        border.color: homeTask.activeFocus ? root.brand : root.line
                         border.width: homeTask.activeFocus ? 2 : 1
                         Behavior on border.color { ColorAnimation { duration: 140 } }
 
@@ -641,12 +637,12 @@ ApplicationWindow {
                                     Layout.preferredWidth: historyModeText.implicitWidth + 20
                                     Layout.preferredHeight: 27
                                     radius: 14
-                                    color: root.purpleSoft
+                                    color: root.brandSoft
                                     Text {
                                         id: historyModeText
                                         anchors.centerIn: parent
                                         text: "离线回放"
-                                        color: root.purple
+                                        color: root.brand
                                         font.pixelSize: 10
                                         font.weight: Font.Bold
                                     }
@@ -687,7 +683,7 @@ ApplicationWindow {
                                     spacing: 8
                                     Rectangle {
                                         width: 25; height: 25; radius: 13
-                                        color: index <= controller.phase ? root.purple : "#E5E0D8"
+                                        color: index <= controller.phase ? root.brand : "#E3E9E5"
                                         Text {
                                             anchors.centerIn: parent
                                             text: index < controller.phase
@@ -708,7 +704,7 @@ ApplicationWindow {
                                         visible: index < 4
                                         Layout.fillWidth: true
                                         height: 1
-                                        color: index < controller.phase ? root.purple : "#DED9D1"
+                                        color: index < controller.phase ? root.brand : "#D9E1DC"
                                     }
                                 }
                             }
@@ -894,7 +890,7 @@ ApplicationWindow {
                                                 required property int index
                                                 Layout.fillWidth: true
                                                 text: modelData.title + "  ↗"
-                                                accent: root.purple
+                                                accent: root.brand
                                                 onClicked: {
                                                     root.selectedPreview = index
                                                     diffDialog.open()
@@ -928,7 +924,7 @@ ApplicationWindow {
                             spacing: 22
                             Row {
                                 spacing: 7
-                                Rectangle { width: 7; height: 7; radius: 4; color: controller.changedFiles.length ? root.purple : "#65626C"; anchors.verticalCenter: parent.verticalCenter }
+                                Rectangle { width: 7; height: 7; radius: 4; color: controller.changedFiles.length ? root.brandBright : "#627276"; anchors.verticalCenter: parent.verticalCenter }
                                 Text { text: controller.changedFiles.length + " 个文件变化"; color: "#D4CFD9"; font.pixelSize: 11 }
                             }
                             Row {
@@ -939,7 +935,7 @@ ApplicationWindow {
                             Item { Layout.fillWidth: true }
                             Text {
                                 text: controller.stateKey === "completed" ? "完成门  /  已放行" : "完成门  /  审查中"
-                                color: controller.stateKey === "completed" ? "#7DD3B8" : "#A9A5AF"
+                                color: controller.stateKey === "completed" ? root.brandBright : "#9DABA7"
                                 font.pixelSize: 11
                                 font.weight: Font.Bold
                                 font.letterSpacing: 0.5

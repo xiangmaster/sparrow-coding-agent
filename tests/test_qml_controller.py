@@ -3,6 +3,7 @@
 import os
 import time
 from datetime import datetime, timezone
+from importlib.resources import files
 from pathlib import Path
 
 import pytest
@@ -344,3 +345,10 @@ def test_qml_application_loads_home_and_history_pages(tmp_path: Path) -> None:
     assert root.findChild(QObject, "runPage").property("visible") is True
     assert root.findChild(QObject, "homePage").property("visible") is False
     dispose_qml_application(app, engine)
+
+
+def test_qml_brand_assets_are_packaged() -> None:
+    asset_dir = files("sparrow_agent").joinpath("qml", "assets")
+
+    assert asset_dir.joinpath("logo.png").is_file()
+    assert asset_dir.joinpath("logo-mark.svg").is_file()
