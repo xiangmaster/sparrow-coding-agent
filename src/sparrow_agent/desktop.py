@@ -11,12 +11,14 @@ from PySide6.QtGui import QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
     QFileDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -27,8 +29,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sparrow_agent.history import (
+    ChangePreview,
+    discover_history,
+    load_history_run,
+)
 from sparrow_agent.models import AgentResult, StopReason
+from sparrow_agent.recording import RecordingError
 from sparrow_agent.session import AgentSession, SessionConfig, SessionEvent
+
+_MAX_DISPLAYED_HISTORY_EVENTS = 500
 
 
 class SessionWorker(QObject):
@@ -62,6 +72,8 @@ class MainWindow(QMainWindow):
         self._worker: SessionWorker | None = None
         self._total_tokens = 0
         self._iterations = 0
+        self._viewing_history = False
+        self._history_previews: tuple[ChangePreview, ...] = ()
         self.setWindowTitle("Sparrow Agent")
         self.setMinimumSize(1180, 720)
         self.resize(1380, 840)
@@ -129,6 +141,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         self.history_list = QListWidget()
         self.history_list.setObjectName("historyList")
+        self.history_list.currentItemChanged.connect(self._show_history_item)
         layout.addWidget(self.history_list, 1)
         privacy = QLabel("运行轨迹可能包含代码，\n请勿随意分享。")
         privacy.setObjectName("muted")
@@ -201,6 +214,14 @@ class MainWindow(QMainWindow):
         self.changes_label = QLabel("尚无变化")
         self.changes_label.setWordWrap(True)
         changes_layout.addWidget(self.changes_label)
+        self.preview_combo = QComboBox()
+        self.preview_combo.setToolTip("选择一项已记录的文件修改")
+        self.preview_combo.setEnabled(False)
+        changes_layout.addWidget(self.preview_combo)
+        self.preview_button = QPushButton("查看修改细节")
+        self.preview_button.setEnabled(False)
+        self.preview_button.clicked.connect(self._show_change_preview)
+        changes_layout.addWidget(self.preview_button)
         layout.addWidget(changes_box)
 
         verification_box = QGroupBox("验证证据")
@@ -234,20 +255,101 @@ class MainWindow(QMainWindow):
         self._refresh_history()
 
     def _refresh_history(self) -> None:
+        selected_path = None
+        current = self.history_list.currentItem()
+        if current is not None:
+            selected_path = current.data(Qt.ItemDataRole.UserRole)
         self.history_list.clear()
-        run_directory = self._workspace / ".sparrow" / "runs"
-        if not run_directory.is_dir():
+        entries = discover_history(self._workspace)
+        if not entries:
             self.history_list.addItem("暂无运行记录")
             return
-        traces = sorted(
-            run_directory.glob("*.jsonl"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )[:20]
-        if not traces:
-            self.history_list.addItem("暂无运行记录")
-        for trace in traces:
-            self.history_list.addItem(trace.stem)
+        for entry in entries:
+            label = f"{entry.modified_at:%m-%d %H:%M}\n{entry.run_id[:12]}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, str(entry.trace_path))
+            item.setToolTip(str(entry.trace_path))
+            self.history_list.addItem(item)
+            if selected_path == str(entry.trace_path):
+                self.history_list.setCurrentItem(item)
+
+    @Slot(object, object)
+    def _show_history_item(
+        self, current: QListWidgetItem | None, _previous: QListWidgetItem | None
+    ) -> None:
+        if current is None or self._thread is not None:
+            return
+        trace_path = current.data(Qt.ItemDataRole.UserRole)
+        if not isinstance(trace_path, str):
+            return
+        try:
+            run = load_history_run(self._workspace, trace_path)
+        except RecordingError as exc:
+            self.state_badge.setText("轨迹损坏")
+            self.status_label.setText(str(exc))
+            current.setToolTip(str(exc))
+            return
+
+        self._viewing_history = True
+        self._history_previews = run.previews
+        self.timeline.clear()
+        for recorded in run.events[:_MAX_DISPLAYED_HISTORY_EVENTS]:
+            self.timeline.addItem(
+                _event_text(
+                    SessionEvent(
+                        sequence=recorded.sequence,
+                        event=recorded.event,
+                        data=recorded.data,
+                    )
+                )
+            )
+        hidden_events = len(run.events) - _MAX_DISPLAYED_HISTORY_EVENTS
+        if hidden_events > 0:
+            self.timeline.addItem(
+                f"…  为保持界面流畅，另有 {hidden_events} 条事件未在列表中展开"
+            )
+        self.task_title.setText(f"{run.task.splitlines()[0][:52]}  ·  历史回放")
+        self.task_editor.setPlainText(run.task)
+        self.task_editor.setReadOnly(True)
+        self.changes_label.setText(
+            "\n".join(f"• {path}" for path in run.changed_files) or "尚无变化"
+        )
+        self.verification_label.setText(run.verification_text)
+        self.gate_label.setText(run.gate_text)
+        self.preview_combo.clear()
+        self.preview_combo.addItems([preview.title for preview in run.previews])
+        has_previews = bool(run.previews)
+        self.preview_combo.setEnabled(has_previews)
+        self.preview_button.setEnabled(has_previews)
+        self.start_button.setEnabled(False)
+        self.state_badge.setText(_stop_reason_text(run.stop_reason))
+        self.status_label.setText(
+            f"离线回放  ·  {run.started_at:%Y-%m-%d %H:%M:%S}  ·  "
+            f"{run.iterations} 轮  ·  {run.total_tokens:,} Tokens"
+        )
+
+    @Slot()
+    def _show_change_preview(self) -> None:
+        index = self.preview_combo.currentIndex()
+        if not 0 <= index < len(self._history_previews):
+            return
+        preview = self._history_previews[index]
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"修改细节 · {preview.title}")
+        dialog.resize(860, 620)
+        layout = QVBoxLayout(dialog)
+        note = QLabel("内容来自运行时轨迹，仅做离线展示，不读取或修改当前工作区。")
+        note.setObjectName("muted")
+        layout.addWidget(note)
+        viewer = QPlainTextEdit()
+        viewer.setReadOnly(True)
+        viewer.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        viewer.setPlainText(preview.text)
+        layout.addWidget(viewer, 1)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        dialog.exec()
 
     @Slot()
     def _start_session(self) -> None:
@@ -273,6 +375,8 @@ class MainWindow(QMainWindow):
             max_iterations=self.iterations_spin.value(),
         )
         self._session = AgentSession(config)
+        self._viewing_history = False
+        self._history_previews = ()
         self._thread = QThread(self)
         self._worker = SessionWorker(self._session)
         self._worker.moveToThread(self._thread)
@@ -288,6 +392,9 @@ class MainWindow(QMainWindow):
         self._set_running(True)
         self.timeline.clear()
         self.changes_label.setText("尚无变化")
+        self.preview_combo.clear()
+        self.preview_combo.setEnabled(False)
+        self.preview_button.setEnabled(False)
         self.verification_label.setText("尚无验证")
         self.gate_label.setText("正在核对本地证据……")
         self.task_title.setText(task.splitlines()[0][:60])
@@ -371,23 +478,33 @@ class MainWindow(QMainWindow):
     def _reset_task(self) -> None:
         if self._thread is not None:
             return
+        self._viewing_history = False
+        self._history_previews = ()
+        self.history_list.clearSelection()
+        self.history_list.setCurrentItem(None)
         self.task_editor.clear()
+        self.task_editor.setReadOnly(False)
         self.timeline.clear()
         self.task_title.setText("新建编程任务")
         self.changes_label.setText("尚无变化")
+        self.preview_combo.clear()
+        self.preview_combo.setEnabled(False)
+        self.preview_button.setEnabled(False)
         self.verification_label.setText("尚无验证")
         self.gate_label.setText("等待运行")
         self.status_label.setText("就绪")
         self.state_badge.setText("就绪")
+        self.start_button.setEnabled(True)
 
     def _set_running(self, running: bool) -> None:
-        self.start_button.setEnabled(not running)
+        self.start_button.setEnabled(not running and not self._viewing_history)
         self.stop_button.setEnabled(running)
         self.task_editor.setReadOnly(running)
         self.workspace_button.setEnabled(not running)
         self.model_combo.setEnabled(not running)
         self.reasoning_combo.setEnabled(not running)
         self.iterations_spin.setEnabled(not running)
+        self.history_list.setEnabled(not running)
         if running:
             self.state_badge.setText("正在运行")
             self.status_label.setText("正在启动 Agent……")
@@ -438,6 +555,18 @@ def _event_text(event: SessionEvent) -> str:
     if event.event == "run_finished":
         return f"■  运行结束  ·  {data.get('stop_reason', 'unknown')}"
     return f"·  {event.event}"
+
+
+def _stop_reason_text(stop_reason: str | None) -> str:
+    labels = {
+        "completed": "已完成",
+        "cancelled": "已取消",
+        "max_iterations": "达到轮次上限",
+        "repeated_action": "重复操作终止",
+        "provider_error": "模型请求失败",
+        "budget_exceeded": "超出预算",
+    }
+    return labels.get(stop_reason, "状态未知")
 
 
 def create_application(argv: list[str] | None = None) -> QApplication:
