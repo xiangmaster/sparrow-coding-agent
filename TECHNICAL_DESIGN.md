@@ -2,11 +2,11 @@
 
 ## 1. 项目范围
 
-Sparrow 是一个单用户命令行编程智能体。用户提供任务和工作区后，
+Sparrow 是一个单用户本地编程智能体，提供命令行和原生桌面入口。用户提供任务和工作区后，
 它可以检查文件、修改代码、执行命令、观察结果，并持续工作，直到能够用证据
 说明任务已经完成。
 
-项目刻意不开发图形界面、多 Agent 编排、检索系统和服务端托管执行功能。
+项目刻意不开发多 Agent 编排、检索系统和服务端托管执行功能。
 本次考核重视对 Agent 机制的真正理解，因此可靠、可解释的核心比功能数量更重要。
 
 系统的行动—观察循环参考 [ReAct](https://arxiv.org/abs/2210.03629)，工具界面设计参考
@@ -27,6 +27,7 @@ Sparrow 是一个单用户命令行编程智能体。用户提供任务和工作
 | 模型协议 | DeepSeek Chat Completions 工具调用 | 两个目标模型都支持结构化调用 |
 | 数据模型 | `dataclasses` 和类型字典 | 不使用框架隐藏状态变化 |
 | 测试 | `pytest` | 适合编写简洁的单元和集成测试 |
+| 桌面界面 | PySide6、Qt Quick 与 QML | 复用 Python 核心，用声明式状态表达行动轨迹与证据 |
 | 打包 | `pyproject.toml` 与 `src/` 目录布局 | 安装可复现，导入边界清晰 |
 
 首个 Provider 依据 DeepSeek 官方的 [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion/)，
@@ -52,7 +53,8 @@ Sparrow 将其作为协议状态保存，但不会将其作为面向用户的最
  `- 构造 Agent
 
 桌面入口（PySide6）
- |- 展示任务、事件时间线、真实差异和完成证据
+ |- QML 展示任务、阶段轨迹、真实差异和完成证据
+ |- DesktopController 将领域事件投影为只读界面状态
  `- 通过 Qt 信号接收会话事件，不直接操作 Agent 内部状态
 
 AgentSession / Runtime
@@ -95,8 +97,9 @@ RunRecorder / Replay
  `- 在不调用模型、不重新执行命令的情况下重放轨迹
 ```
 
-桌面端不会引入 HTTP 服务或前后端两套状态。`AgentSession` 是不依赖 Qt 的纯 Python
-应用层；界面把它放入 `QThread`，再用 Signal/Slot 将事件送回主线程。这样 CLI、GUI
+桌面端不会引入 HTTP 服务或前后端两套状态。QML 只绑定 `DesktopController` 暴露的
+属性、列表和操作槽；`AgentSession` 仍是不依赖 Qt 的纯 Python 应用层。控制器把它放入
+`QThread`，再用 Signal/Slot 将事件送回主线程。这样 CLI、GUI
 和离线测试共享同一执行路径，Qt 退出或界面重绘不会改变 Agent 的证据语义。
 
 取消采用协作式语义：会话设置线程安全的取消标记，Agent 在模型请求前后、工具调用

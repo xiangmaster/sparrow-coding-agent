@@ -74,6 +74,8 @@ def test_discover_history_sorts_limits_and_ignores_untrusted_entries(tmp_path: P
     entries = discover_history(tmp_path, limit=1)
 
     assert [entry.run_id for entry in entries] == ["new"]
+    assert entries[0].task == "修复边界条件"
+    assert entries[0].stop_reason == "completed"
 
 
 def test_load_history_run_builds_offline_summary_and_replace_preview(tmp_path: Path) -> None:

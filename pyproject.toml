@@ -25,6 +25,7 @@ gui = [
 [project.scripts]
 sparrow = "sparrow_agent.cli:main"
 sparrow-gui = "sparrow_agent.gui:main"
+sparrow-gui-legacy = "sparrow_agent.desktop:run_desktop"
 
 [tool.pytest.ini_options]
 addopts = "-q"

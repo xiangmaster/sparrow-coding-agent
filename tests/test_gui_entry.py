@@ -14,7 +14,7 @@ def test_gui_entry_explains_missing_optional_dependency(
     real_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "sparrow_agent.desktop":
+        if name == "sparrow_agent.qml_app":
             error = ModuleNotFoundError("No module named 'PySide6'")
             error.name = "PySide6"
             raise error
@@ -32,7 +32,7 @@ def test_gui_entry_does_not_hide_unrelated_import_error(
     real_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "sparrow_agent.desktop":
+        if name == "sparrow_agent.qml_app":
             error = ModuleNotFoundError("No module named 'unexpected'")
             error.name = "unexpected"
             raise error

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, Mapping
 from sparrow_agent.recording import RecordedEvent, RecordingError, read_trace
 
 _MAX_HISTORY_ITEMS = 100
+_MAX_HISTORY_PROBE_BYTES = 2 * 1024 * 1024
 _MUTATION_TOOLS = frozenset(
     {"apply_patch", "replace_text", "rename_file", "delete_file"}
 )
@@ -23,6 +25,8 @@ class HistoryEntry:
     trace_path: Path
     run_id: str
     modified_at: datetime
+    task: str = "未记录任务"
+    stop_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +85,7 @@ def discover_history(workspace: str | Path, *, limit: int = 20) -> tuple[History
                 trace_path=path,
                 run_id=path.stem,
                 modified_at=datetime.fromtimestamp(stat_result.st_mtime).astimezone(),
+                **_probe_history_labels(path, stat_result.st_size),
             )
         )
     entries.sort(key=lambda item: item.modified_at, reverse=True)
@@ -252,3 +257,31 @@ def _verification_summary(value: Any) -> str:
 
 def _plain_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _probe_history_labels(path: Path, size: int) -> dict[str, Any]:
+    """只读取首尾受限片段生成列表标签；打开记录时仍会执行完整校验。"""
+
+    task = "未记录任务"
+    stop_reason: str | None = None
+    try:
+        with path.open("rb") as stream:
+            first_line = stream.readline(_MAX_HISTORY_PROBE_BYTES + 1)
+            if len(first_line) <= _MAX_HISTORY_PROBE_BYTES:
+                first_value = json.loads(first_line)
+                first_data = first_value.get("data") if isinstance(first_value, dict) else None
+                if isinstance(first_data, dict) and isinstance(first_data.get("task"), str):
+                    task = str(first_data["task"]).strip() or task
+
+            stream.seek(max(0, size - _MAX_HISTORY_PROBE_BYTES))
+            tail = stream.read(_MAX_HISTORY_PROBE_BYTES)
+            lines = tail.splitlines()
+            if lines:
+                last_value = json.loads(lines[-1])
+                last_data = last_value.get("data") if isinstance(last_value, dict) else None
+                if isinstance(last_data, dict):
+                    value = last_data.get("stop_reason")
+                    stop_reason = value if isinstance(value, str) else None
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    return {"task": task, "stop_reason": stop_reason}

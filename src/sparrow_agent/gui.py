@@ -7,7 +7,7 @@ import sys
 
 def main() -> int:
     try:
-        from sparrow_agent.desktop import run_desktop
+        from sparrow_agent.qml_app import run_qml_desktop
     except ModuleNotFoundError as exc:
         if exc.name == "PySide6" or (exc.name or "").startswith("PySide6."):
             print(
@@ -17,4 +17,4 @@ def main() -> int:
             )
             return 2
         raise
-    return run_desktop()
+    return run_qml_desktop()
