@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import uuid
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -327,6 +328,35 @@ class DesktopController(QObject):
         self._set_state(run.stop_reason or "unknown", _stop_reason_text(run.stop_reason))
         self.contentChanged.emit()
 
+    @Slot(int)
+    def deleteHistory(self, index: int) -> None:
+        """从侧栏移除任务，并把本地记录放入可恢复的回收目录。"""
+
+        if self._thread is not None or not 0 <= index < len(self._history_refs):
+            return
+        kind, reference = self._history_refs[index]
+        try:
+            if kind == "thread":
+                ConversationStore(self._workspace).move_to_trash(str(reference))
+            else:
+                _move_run_to_trash(self._workspace, Path(reference))
+        except (ConversationError, RecordingError, OSError) as exc:
+            self.alert.emit("无法删除任务", str(exc), "error")
+            return
+
+        active_thread = getattr(getattr(self._session, "thread", None), "id", None)
+        active_trace = Path(self._trace_path) if self._trace_path else None
+        should_reset = (
+            kind == "thread" and active_thread == str(reference)
+        ) or (
+            kind == "run"
+            and active_trace is not None
+            and active_trace == Path(reference)
+        )
+        if should_reset:
+            self.newTask()
+        self.refresh_history()
+
     def _load_conversation(self, thread_id: str) -> None:
         try:
             thread = ConversationStore(self._workspace).load(thread_id)
@@ -364,12 +394,14 @@ class DesktopController(QObject):
                             events.append(_present_recorded_event(event))
                         if event.event == "tool_result":
                             presented = _present_recorded_event(event)
+                            tool_name = str(event.data.get("tool_name", ""))
                             messages.append(
                                 {
                                     "kind": "tool",
                                     "title": presented["title"],
                                     "text": presented["detail"],
                                     "tone": presented["tone"],
+                                    **_tool_visual(tool_name),
                                 }
                             )
                     previews.extend(_preview_dict(item) for item in run.previews)
@@ -548,12 +580,14 @@ class DesktopController(QObject):
         elif event.event == "tool_result":
             self._consume_tool_result(data)
             presented = _present_session_event(event)
+            tool_name = str(data.get("tool_name", ""))
             self._conversation_messages.append(
                 {
                     "kind": "tool",
                     "title": presented["title"],
                     "text": presented["detail"],
                     "tone": presented["tone"],
+                    **_tool_visual(tool_name),
                 }
             )
         elif event.event == "change_preview":
@@ -744,6 +778,20 @@ def _tool_detail(data: Mapping[str, Any]) -> str:
     return _one_line(output) or "操作成功"
 
 
+def _tool_visual(tool_name: str) -> dict[str, str]:
+    if tool_name in {"list_files", "search_text"}:
+        return {"action": "inspect", "icon": "⌕", "actionLabel": "检查"}
+    if tool_name == "read_file":
+        return {"action": "read", "icon": "≡", "actionLabel": "读取"}
+    if tool_name in _MUTATION_TOOLS:
+        return {"action": "edit", "icon": "±", "actionLabel": "修改"}
+    if tool_name == "run_command":
+        return {"action": "command", "icon": ">_", "actionLabel": "命令"}
+    if tool_name == "request_completion":
+        return {"action": "gate", "icon": "✓", "actionLabel": "审查"}
+    return {"action": "other", "icon": "·", "actionLabel": "工具"}
+
+
 def _preview_dict(preview: ChangePreview) -> dict[str, Any]:
     return _preview_payload(preview.title, preview.text)
 
@@ -870,6 +918,19 @@ def _short_timestamp(value: str) -> str:
         return datetime.fromisoformat(value).astimezone().strftime("%m-%d %H:%M")
     except ValueError:
         return "时间未知"
+
+
+def _move_run_to_trash(workspace: Path, trace_path: Path) -> Path:
+    run = load_history_run(workspace, trace_path)
+    trash_root = workspace / ".sparrow" / "trash"
+    if trash_root.is_symlink():
+        raise RecordingError("回收目录不能是符号链接")
+    destination = trash_root / f"run-{run.entry.run_id}-{uuid.uuid4().hex[:8]}"
+    destination.mkdir(parents=True, exist_ok=False)
+    for item in (run.entry.trace_path, run.entry.trace_path.with_suffix(".log")):
+        if item.is_file() and not item.is_symlink():
+            item.replace(destination / item.name)
+    return destination
 
 
 def _one_line(value: Any) -> str:

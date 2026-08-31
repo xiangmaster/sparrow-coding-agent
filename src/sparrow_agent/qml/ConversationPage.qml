@@ -16,6 +16,16 @@ Item {
     property color jade: "#247D69"
     property color vermilion: "#C7523D"
 
+    function actionColor(action, tone) {
+        if (tone === "error") return vermilion
+        if (action === "inspect") return "#3E7C92"
+        if (action === "read") return "#607B75"
+        if (action === "edit") return "#B26F35"
+        if (action === "command") return "#6D639C"
+        if (action === "gate") return jade
+        return textSecondary
+    }
+
     function sendMessage() {
         const message = composer.text.trim()
         if (message.length === 0 || backend.isBusy || backend.mode === "history")
@@ -109,6 +119,12 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
             onCountChanged: positionViewAtEnd()
+            add: Transition {
+                ParallelAnimation {
+                    NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 180 }
+                    NumberAnimation { property: "y"; from: 10; duration: 180; easing.type: Easing.OutCubic }
+                }
+            }
 
             delegate: Item {
                 id: messageDelegate
@@ -117,6 +133,7 @@ Item {
                 height: messageBubble.height + 12
                 readonly property bool isUser: modelData.kind === "user"
                 readonly property bool isTool: modelData.kind === "tool"
+                readonly property color toolAccent: page.actionColor(modelData.action, modelData.tone)
 
                 Rectangle {
                     id: messageBubble
@@ -132,10 +149,13 @@ Item {
                            ? page.brandSoft
                            : messageDelegate.isTool
                              ? (toolMouse.containsMouse ? "#EDF1EE" : "#F5F7F4")
-                             : "transparent"
-                    border.width: messageDelegate.isTool ? 1 : 0
-                    border.color: modelData.tone === "error" ? "#E7B9B0" : page.line
+                             : page.paperRaised
+                    border.width: messageDelegate.isUser ? 0 : 1
+                    border.color: messageDelegate.isTool
+                                  ? Qt.alpha(messageDelegate.toolAccent, 0.42)
+                                  : Qt.alpha(page.brand, 0.2)
                     Behavior on color { ColorAnimation { duration: 100 } }
+                    Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
                     RowLayout {
                         id: messageContent
@@ -158,10 +178,19 @@ Item {
 
                         Rectangle {
                             visible: messageDelegate.isTool
-                            Layout.preferredWidth: 7
-                            Layout.preferredHeight: 7
-                            radius: 4
-                            color: modelData.tone === "error" ? page.vermilion : page.textSecondary
+                            Layout.preferredWidth: 27
+                            Layout.preferredHeight: 27
+                            radius: 7
+                            color: Qt.alpha(messageDelegate.toolAccent, 0.13)
+                            border.color: Qt.alpha(messageDelegate.toolAccent, 0.32)
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.icon || "·"
+                                color: messageDelegate.toolAccent
+                                font.family: modelData.action === "command" ? "Menlo" : "PingFang SC"
+                                font.pixelSize: modelData.action === "command" ? 9 : 14
+                                font.weight: Font.Bold
+                            }
                         }
 
                         ColumnLayout {
@@ -170,8 +199,10 @@ Item {
                             Text {
                                 visible: !messageDelegate.isUser
                                 Layout.fillWidth: true
-                                text: modelData.title
-                                color: messageDelegate.isTool ? page.textSecondary : page.textPrimary
+                                text: messageDelegate.isTool
+                                      ? (modelData.actionLabel + "  ·  " + modelData.title)
+                                      : modelData.title
+                                color: messageDelegate.isTool ? messageDelegate.toolAccent : page.textPrimary
                                 font.pixelSize: messageDelegate.isTool ? 11 : 12
                                 font.weight: Font.DemiBold
                                 elide: Text.ElideRight
@@ -206,14 +237,19 @@ Item {
             }
         }
 
-        Flow {
+        ListView {
+            id: changeList
             visible: backend.previews.length > 0
             Layout.fillWidth: true
+            Layout.preferredHeight: visible ? 38 : 0
             Layout.bottomMargin: 8
+            orientation: ListView.Horizontal
+            clip: true
             spacing: 7
-            Repeater {
-                model: backend.previews
-                Button {
+            model: backend.previews
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+            delegate: Button {
                     id: changeChip
                     required property var modelData
                     required property int index
@@ -299,7 +335,6 @@ Item {
                             }
                         }
                     }
-                }
             }
         }
 
@@ -350,6 +385,8 @@ Item {
                 height: 38
                 enabled: composer.text.trim().length > 0 && !backend.isBusy
                 text: backend.isBusy ? "处理中" : "发送"
+                scale: pressed ? 0.96 : 1
+                Behavior on scale { NumberAnimation { duration: 90 } }
                 onClicked: page.sendMessage()
                 contentItem: Text {
                     text: parent.text

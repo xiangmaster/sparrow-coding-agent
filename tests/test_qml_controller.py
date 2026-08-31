@@ -33,6 +33,7 @@ from sparrow_agent.qml_controller import (  # noqa: E402
     _SessionWorker,
     _diff_lines,
     _present_event,
+    _tool_visual,
 )
 from sparrow_agent.recording import RunRecorder  # noqa: E402
 from sparrow_agent.session import SessionEvent  # noqa: E402
@@ -442,6 +443,39 @@ def test_qml_controller_restores_thread_and_continues_after_restart(tmp_path: Pa
 
 
 @pytest.mark.gui_smoke
+def test_qml_controller_deletes_thread_from_sidebar_into_trash(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=fake\n", encoding="utf-8")
+    session = ConversationSession(
+        ConversationConfig(workspace=tmp_path, config_directory=tmp_path),
+        provider_factory=lambda settings: ScriptedProvider(
+            [_completion_model_response("done", "完成")]
+        ),
+    )
+    session.run_turn("待删除任务")
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
+
+    assert len(controller.history) == 1
+    controller.deleteHistory(0)
+
+    assert controller.history == []
+    trash = tmp_path / ".sparrow" / "trash"
+    assert any(path.name.startswith("thread-") for path in trash.iterdir())
+
+
+@pytest.mark.gui_smoke
+def test_qml_controller_deletes_legacy_run_into_trash(tmp_path: Path) -> None:
+    trace = _history_trace(tmp_path)
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
+
+    controller.deleteHistory(0)
+
+    assert controller.history == []
+    assert not trace.exists()
+    trash = tmp_path / ".sparrow" / "trash"
+    assert any((directory / trace.name).is_file() for directory in trash.iterdir())
+
+
+@pytest.mark.gui_smoke
 def test_qml_controller_validates_workspace_task_and_history_errors(tmp_path: Path) -> None:
     controller = DesktopController(tmp_path, config_directory=tmp_path)
     alerts = []
@@ -552,6 +586,23 @@ def test_qml_diff_lines_expose_line_numbers_and_visual_kinds() -> None:
     assert lines[5]["newLine"] == "3"
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "action", "label"),
+    [
+        ("list_files", "inspect", "检查"),
+        ("read_file", "read", "读取"),
+        ("apply_patch", "edit", "修改"),
+        ("run_command", "command", "命令"),
+        ("request_completion", "gate", "审查"),
+    ],
+)
+def test_tool_visual_distinguishes_action_types(tool_name, action, label) -> None:
+    visual = _tool_visual(tool_name)
+
+    assert visual["action"] == action
+    assert visual["actionLabel"] == label
+
+
 def test_session_worker_emits_failure_without_raising() -> None:
     worker = _SessionWorker(_FailingSession(), "任务")
     errors = []
@@ -584,6 +635,9 @@ def test_qml_application_loads_home_and_history_pages(tmp_path: Path) -> None:
     assert root.findChild(QObject, "conversationList") is not None
     assert root.findChild(QObject, "conversationComposer") is not None
     assert root.findChild(QObject, "continueTaskButton") is not None
+    root.confirmHistoryDeletion(0, "修复价格边界")
+    app.processEvents()
+    assert root.findChild(QObject, "deleteTaskDialog").property("visible") is True
     dispose_qml_application(app, engine)
 
 

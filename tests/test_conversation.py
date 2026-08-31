@@ -202,3 +202,24 @@ def test_conversation_store_discovers_recent_valid_threads(tmp_path: Path) -> No
     assert [thread.title for thread in discovered] == ["任务 1", "任务 0"]
     with pytest.raises(ValueError, match="limit"):
         ConversationStore(tmp_path).discover(limit=0)
+
+
+def test_conversation_store_moves_thread_and_traces_to_trash(tmp_path: Path) -> None:
+    _write_env(tmp_path)
+    session = ConversationSession(
+        ConversationConfig(workspace=tmp_path, config_directory=tmp_path),
+        provider_factory=lambda settings: ScriptedProvider(
+            [_completion("done", "完成")]
+        ),
+    )
+    session.run_turn("可删除任务")
+    thread_path = tmp_path / ".sparrow" / "threads" / f"{session.thread.id}.json"
+    trace_path = tmp_path / session.thread.turns[0].trace_path
+
+    trash = ConversationStore(tmp_path).move_to_trash(session.thread.id)
+
+    assert not thread_path.exists()
+    assert not trace_path.exists()
+    assert (trash / thread_path.name).is_file()
+    assert (trash / trace_path.name).is_file()
+    assert ConversationStore(tmp_path).discover() == ()

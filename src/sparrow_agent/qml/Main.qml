@@ -31,10 +31,18 @@ ApplicationWindow {
     readonly property color amber: "#C58A36"
 
     property int selectedPreview: 0
+    property int pendingDeleteIndex: -1
+    property string pendingDeleteTitle: ""
 
     function showDiff(index) {
         selectedPreview = index
         diffDialog.open()
+    }
+
+    function confirmHistoryDeletion(index, title) {
+        pendingDeleteIndex = index
+        pendingDeleteTitle = title
+        deleteTaskDialog.open()
     }
 
     function toneColor(tone) {
@@ -61,6 +69,8 @@ ApplicationWindow {
         rightPadding: 15
         font.pixelSize: 13
         font.weight: Font.DemiBold
+        scale: pressed ? 0.97 : 1
+        Behavior on scale { NumberAnimation { duration: 90 } }
         contentItem: Text {
             text: control.text
             color: control.filled ? "white" : control.accent
@@ -138,6 +148,71 @@ ApplicationWindow {
             color: root.textSecondary
             font.pixelSize: 14
             wrapMode: Text.Wrap
+        }
+    }
+
+    Dialog {
+        id: deleteTaskDialog
+        objectName: "deleteTaskDialog"
+        modal: true
+        anchors.centerIn: parent
+        width: 430
+        padding: 0
+        standardButtons: Dialog.NoButton
+        background: Rectangle {
+            color: root.paperRaised
+            radius: 16
+            border.color: root.line
+        }
+        header: Rectangle {
+            implicitHeight: 64
+            color: "#F8EAE7"
+            radius: 16
+            Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 16; color: parent.color }
+            Text {
+                anchors.left: parent.left
+                anchors.leftMargin: 22
+                anchors.verticalCenter: parent.verticalCenter
+                text: "移除任务会话"
+                color: root.vermilion
+                font.pixelSize: 17
+                font.weight: Font.Bold
+            }
+        }
+        contentItem: Text {
+            leftPadding: 22
+            rightPadding: 22
+            topPadding: 20
+            bottomPadding: 18
+            text: "“" + root.pendingDeleteTitle + "”将从侧栏移除。\n运行记录会移入本地 .sparrow/trash，可手工恢复。"
+            color: root.textSecondary
+            font.pixelSize: 13
+            wrapMode: Text.Wrap
+            lineHeight: 1.4
+        }
+        footer: Rectangle {
+            implicitHeight: 64
+            color: "transparent"
+            Row {
+                anchors.right: parent.right
+                anchors.rightMargin: 18
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 10
+                FlatButton {
+                    text: "取消"
+                    accent: root.textSecondary
+                    onClicked: deleteTaskDialog.close()
+                }
+                FlatButton {
+                    text: "移入回收目录"
+                    accent: root.vermilion
+                    filled: true
+                    onClicked: {
+                        controller.deleteHistory(root.pendingDeleteIndex)
+                        deleteTaskDialog.close()
+                    }
+                }
+            }
         }
     }
 
@@ -277,69 +352,161 @@ ApplicationWindow {
         id: settingsPopup
         objectName: "settingsPopup"
         x: root.width - width - 24
-        y: 64
-        width: 320
-        padding: 20
+        y: 58
+        width: 390
+        padding: 0
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 140 }
+                NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: 160; easing.type: Easing.OutCubic }
+            }
+        }
+        exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: 100 } }
         background: Rectangle {
             color: root.paperRaised
-            radius: 14
-            border.color: root.line
+            radius: 18
+            border.color: "#BFD0C8"
+            border.width: 1
         }
         contentItem: ColumnLayout {
-            spacing: 12
-            Text {
-                text: "运行设置"
-                color: root.textPrimary
-                font.pixelSize: 17
-                font.weight: Font.Bold
-            }
-            SmallLabel { text: "模型" }
-            ComboBox {
-                id: modelInput
+            spacing: 0
+
+            Rectangle {
                 Layout.fillWidth: true
-                editable: true
-                model: ["deepseek-v4-flash", "deepseek-v4-pro"]
-                currentIndex: 0
+                Layout.preferredHeight: 78
+                color: root.inkRaised
+                radius: 18
+                Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 18; color: parent.color }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 20
+                    anchors.rightMargin: 16
+                    spacing: 12
+                    Rectangle {
+                        Layout.preferredWidth: 38
+                        Layout.preferredHeight: 38
+                        radius: 11
+                        color: Qt.alpha(root.brandBright, 0.14)
+                        Text { anchors.centerIn: parent; text: "⌁"; color: root.brandBright; font.pixelSize: 22 }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 3
+                        Text { text: "运行设置"; color: "#F3F7F5"; font.pixelSize: 17; font.weight: Font.Bold }
+                        Text { text: "调整当前任务的模型与资源边界"; color: "#91A7A2"; font.pixelSize: 10 }
+                    }
+                    Button {
+                        text: "×"
+                        onClicked: settingsPopup.close()
+                        implicitWidth: 30; implicitHeight: 30
+                        contentItem: Text { text: parent.text; color: "#91A7A2"; font.pixelSize: 19; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                        background: Rectangle { radius: 8; color: parent.hovered ? "#19363A" : "transparent" }
+                    }
+                }
             }
-            SmallLabel { text: "推理强度" }
-            ComboBox {
-                id: reasoningInput
+
+            ColumnLayout {
                 Layout.fillWidth: true
-                model: ["low", "high", "max"]
-                currentIndex: 0
-            }
-            SmallLabel { text: "最大迭代次数" }
-            SpinBox {
-                id: iterationInput
-                Layout.fillWidth: true
-                from: 1
-                to: 100
-                value: 20
-            }
-            SmallLabel { text: "累计 Token 预算（千）" }
-            SpinBox {
-                id: tokenBudgetInput
-                objectName: "tokenBudgetInput"
-                Layout.fillWidth: true
-                from: 50
-                to: 2000
-                stepSize: 50
-                value: 400
-            }
-            Text {
-                Layout.fillWidth: true
-                text: "达到上限时会安全停止；复杂工程建议 400k，简单任务可降低。"
-                color: root.textSecondary
-                font.pixelSize: 10
-                wrapMode: Text.Wrap
-            }
-            Text {
-                Layout.fillWidth: true
-                text: controller.hasApiConfig ? "Sparrow API 配置已就绪" : "Sparrow 启动目录尚未配置 .env"
-                color: controller.hasApiConfig ? root.jade : root.vermilion
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
+                Layout.leftMargin: 20
+                Layout.rightMargin: 20
+                Layout.topMargin: 18
+                Layout.bottomMargin: 20
+                spacing: 11
+
+                SmallLabel { text: "MODEL  /  模型" }
+                ComboBox {
+                    id: modelInput
+                    Layout.fillWidth: true
+                    implicitHeight: 40
+                    editable: true
+                    model: ["deepseek-v4-flash", "deepseek-v4-pro"]
+                    currentIndex: 0
+                    background: Rectangle {
+                        radius: 9
+                        color: "#F1F5F2"
+                        border.color: parent.activeFocus ? root.brand : root.line
+                    }
+                }
+
+                SmallLabel { text: "REASONING  /  推理强度" }
+                ComboBox {
+                    id: reasoningInput
+                    Layout.fillWidth: true
+                    implicitHeight: 40
+                    model: ["low", "high", "max"]
+                    currentIndex: 0
+                    background: Rectangle { radius: 9; color: "#F1F5F2"; border.color: parent.activeFocus ? root.brand : root.line }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 12
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        SmallLabel { text: "最大迭代" }
+                        SpinBox {
+                            id: iterationInput
+                            Layout.fillWidth: true
+                            implicitHeight: 40
+                            from: 1
+                            to: 100
+                            value: 20
+                            editable: true
+                            background: Rectangle { radius: 9; color: "#F1F5F2"; border.color: parent.activeFocus ? root.brand : root.line }
+                        }
+                    }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        SmallLabel { text: "Token 预算（千）" }
+                        SpinBox {
+                            id: tokenBudgetInput
+                            objectName: "tokenBudgetInput"
+                            Layout.fillWidth: true
+                            implicitHeight: 40
+                            from: 50
+                            to: 2000
+                            stepSize: 50
+                            value: 400
+                            editable: true
+                            background: Rectangle { radius: 9; color: "#F1F5F2"; border.color: parent.activeFocus ? root.brand : root.line }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 54
+                    radius: 10
+                    color: controller.hasApiConfig ? "#E6F3ED" : "#F8E7E3"
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 13
+                        anchors.rightMargin: 13
+                        spacing: 10
+                        Rectangle {
+                            width: 8; height: 8; radius: 4
+                            color: controller.hasApiConfig ? root.jade : root.vermilion
+                        }
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 2
+                            Text {
+                                text: controller.hasApiConfig ? "DeepSeek 配置已就绪" : "尚未找到 Sparrow .env"
+                                color: controller.hasApiConfig ? root.jade : root.vermilion
+                                font.pixelSize: 11
+                                font.weight: Font.DemiBold
+                            }
+                            Text {
+                                text: "预算达到上限时会保留现场并安全停止"
+                                color: root.textSecondary
+                                font.pixelSize: 9
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -522,6 +689,7 @@ ApplicationWindow {
                     model: controller.history
                     boundsBehavior: Flickable.StopAtBounds
                     delegate: Rectangle {
+                        id: historyDelegate
                         required property var modelData
                         required property int index
                         width: historyList.width
@@ -530,6 +698,7 @@ ApplicationWindow {
                         color: historyMouse.containsMouse ? "#163034" : "transparent"
                         border.color: "transparent"
                         RowLayout {
+                            z: 2
                             anchors.fill: parent
                             anchors.leftMargin: 11
                             anchors.rightMargin: 9
@@ -565,7 +734,31 @@ ApplicationWindow {
                                     }
                                 }
                             }
-                            Text { text: "›"; color: "#65626D"; font.pixelSize: 18 }
+                            Button {
+                                id: deleteHistoryButton
+                                objectName: "deleteHistoryButton-" + index
+                                visible: true
+                                enabled: !controller.isBusy
+                                Layout.preferredWidth: 27
+                                Layout.preferredHeight: 27
+                                z: 3
+                                text: historyMouse.containsMouse ? "×" : "⋯"
+                                onClicked: root.confirmHistoryDeletion(index, modelData.title)
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: parent.hovered ? "#F2B7AD" : "#8F8589"
+                                    font.pixelSize: 17
+                                    horizontalAlignment: Text.AlignHCenter
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                                background: Rectangle {
+                                    radius: 7
+                                    color: parent.hovered ? "#3A2525" : "transparent"
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: "删除任务"
+                            }
+                            Text { visible: !deleteHistoryButton.visible; text: "›"; color: "#65626D"; font.pixelSize: 18 }
                         }
                         MouseArea {
                             id: historyMouse
@@ -573,6 +766,7 @@ ApplicationWindow {
                             hoverEnabled: true
                             enabled: !controller.isBusy
                             onClicked: controller.loadHistory(index)
+                            z: 0
                         }
                     }
                     Text {

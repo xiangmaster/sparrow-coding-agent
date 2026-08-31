@@ -178,6 +178,36 @@ class ConversationStore:
                 continue
         return tuple(threads)
 
+    def move_to_trash(self, thread_id: str) -> Path:
+        """把任务及其逐轮轨迹移入本地回收目录，不直接销毁数据。"""
+
+        thread = self.load(thread_id)
+        source = self._thread_directory(create=False) / f"{thread_id}.json"
+        trash_root = self._root / ".sparrow" / "trash"
+        if trash_root.is_symlink():
+            raise ConversationError("回收目录不能是符号链接")
+        destination = trash_root / f"thread-{thread_id}-{uuid.uuid4().hex[:8]}"
+        try:
+            destination.mkdir(parents=True, exist_ok=False)
+            os.chmod(trash_root, 0o700)
+            os.chmod(destination, 0o700)
+            for turn in thread.turns:
+                if not turn.trace_path:
+                    continue
+                trace = (self._root / turn.trace_path).resolve(strict=False)
+                run_directory = (self._root / ".sparrow" / "runs").resolve(
+                    strict=False
+                )
+                if not trace.is_relative_to(run_directory) or trace.is_symlink():
+                    raise ConversationError("任务轨迹路径无效")
+                for item in (trace, trace.with_suffix(".log")):
+                    if item.is_file() and not item.is_symlink():
+                        item.replace(destination / item.name)
+            source.replace(destination / source.name)
+        except (OSError, ConversationError) as exc:
+            raise ConversationError("无法把任务移入回收目录") from exc
+        return destination
+
     def _thread_directory(self, *, create: bool) -> Path:
         internal = self._root / ".sparrow"
         directory = internal / "threads"
