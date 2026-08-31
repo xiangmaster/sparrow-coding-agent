@@ -50,7 +50,12 @@ def test_session_runs_once_publishes_events_and_keeps_trace_optional(
     provider = ScriptedProvider([_completion_response()])
     received = []
     session = AgentSession(
-        SessionConfig(workspace=tmp_path, task="解释项目", record=False),
+        SessionConfig(
+            workspace=tmp_path,
+            task="解释项目",
+            config_directory=tmp_path,
+            record=False,
+        ),
         provider_factory=lambda settings: provider,
     )
     session.add_listener(lambda event: (_ for _ in ()).throw(RuntimeError("界面异常")))
@@ -79,7 +84,7 @@ def test_session_runs_once_publishes_events_and_keeps_trace_optional(
 def test_session_writes_replayable_trace(tmp_path: Path) -> None:
     _write_env(tmp_path)
     session = AgentSession(
-        SessionConfig(workspace=tmp_path, task="解释项目"),
+        SessionConfig(workspace=tmp_path, task="解释项目", config_directory=tmp_path),
         provider_factory=lambda settings: ScriptedProvider([_completion_response()]),
     )
 
@@ -101,7 +106,12 @@ def test_session_cooperatively_cancels_blocking_provider(tmp_path: Path) -> None
             return _completion_response()
 
     session = AgentSession(
-        SessionConfig(workspace=tmp_path, task="等待取消", record=False),
+        SessionConfig(
+            workspace=tmp_path,
+            task="等待取消",
+            config_directory=tmp_path,
+            record=False,
+        ),
         provider_factory=lambda settings: BlockingProvider(),
     )
     outcomes = []
@@ -121,7 +131,9 @@ def test_session_cooperatively_cancels_blocking_provider(tmp_path: Path) -> None
 
 
 def test_session_marks_configuration_error_as_failed(tmp_path: Path) -> None:
-    session = AgentSession(SessionConfig(workspace=tmp_path, task="任务"))
+    session = AgentSession(
+        SessionConfig(workspace=tmp_path, task="任务", config_directory=tmp_path)
+    )
 
     with pytest.raises(Exception, match="配置文件不存在"):
         session.run()
@@ -131,6 +143,46 @@ def test_session_marks_configuration_error_as_failed(tmp_path: Path) -> None:
     assert session.cancel() is False
 
 
+def test_session_keeps_provider_config_separate_from_target_workspace(
+    tmp_path: Path,
+) -> None:
+    config_directory = tmp_path / "sparrow"
+    workspace = tmp_path / "target"
+    config_directory.mkdir()
+    workspace.mkdir()
+    _write_env(config_directory)
+    (workspace / ".env").write_text(
+        "DEEPSEEK_API_KEY=untrusted-target-key\nSPARROW_MODEL=untrusted-model\n",
+        encoding="utf-8",
+    )
+    captured_settings = []
+
+    def provider_factory(settings):
+        captured_settings.append(settings)
+        return ScriptedProvider([_completion_response()])
+
+    session = AgentSession(
+        SessionConfig(
+            workspace=workspace,
+            task="解释项目",
+            config_directory=config_directory,
+            record=False,
+        ),
+        provider_factory=provider_factory,
+    )
+
+    session.run()
+
+    assert captured_settings[0].api_key == "local-test-key"
+    assert captured_settings[0].model == "deepseek-v4-flash"
+
+
 def test_session_config_rejects_empty_task(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="任务不能为空"):
         SessionConfig(workspace=tmp_path, task="  ")
+
+
+def test_session_config_defaults_to_real_project_token_budget(tmp_path: Path) -> None:
+    config = SessionConfig(workspace=tmp_path, task="任务")
+
+    assert config.max_total_tokens == 400_000

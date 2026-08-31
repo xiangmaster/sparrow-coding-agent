@@ -197,15 +197,19 @@ def test_qml_controller_runs_session_in_worker_and_collects_events(tmp_path: Pat
         "DEEPSEEK_API_KEY=fake\nDEEPSEEK_BASE_URL=https://example.invalid\n",
         encoding="utf-8",
     )
-    app, engine, _ = build_qml_application([], workspace=tmp_path)
+    app, engine, _ = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
     configs = []
 
     def factory(config):
         configs.append(config)
         return _CompletedSession(config)
 
-    controller = DesktopController(tmp_path, session_factory=factory)
-    controller.startTask("  检查项目  ", "deepseek-v4-flash", "low", 8)
+    controller = DesktopController(
+        tmp_path, config_directory=tmp_path, session_factory=factory
+    )
+    controller.startTask("  检查项目  ", "deepseek-v4-flash", "low", 8, 450_000)
     deadline = time.monotonic() + 2
     while controller.isBusy and time.monotonic() < deadline:
         app.processEvents()
@@ -214,6 +218,7 @@ def test_qml_controller_runs_session_in_worker_and_collects_events(tmp_path: Pat
     assert controller.isBusy is False
     assert configs[0].task == "检查项目"
     assert configs[0].max_iterations == 8
+    assert configs[0].max_total_tokens == 450_000
     assert controller.mode == "run"
     assert controller.stateKey == "completed"
     assert controller.phase == 4
@@ -230,12 +235,16 @@ def test_qml_controller_reports_worker_failure(tmp_path: Path) -> None:
         "DEEPSEEK_API_KEY=fake\nDEEPSEEK_BASE_URL=https://example.invalid\n",
         encoding="utf-8",
     )
-    app, engine, _ = build_qml_application([], workspace=tmp_path)
-    controller = DesktopController(tmp_path, session_factory=_FailingSession)
+    app, engine, _ = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
+    controller = DesktopController(
+        tmp_path, config_directory=tmp_path, session_factory=_FailingSession
+    )
     alerts = []
     controller.alert.connect(lambda *values: alerts.append(values))
 
-    controller.startTask("触发错误", "deepseek-v4-flash", "low", 4)
+    controller.startTask("触发错误", "deepseek-v4-flash", "low", 4, 400_000)
     deadline = time.monotonic() + 2
     while controller.isBusy and time.monotonic() < deadline:
         app.processEvents()
@@ -249,12 +258,12 @@ def test_qml_controller_reports_worker_failure(tmp_path: Path) -> None:
 
 @pytest.mark.gui_smoke
 def test_qml_controller_validates_workspace_task_and_history_errors(tmp_path: Path) -> None:
-    controller = DesktopController(tmp_path)
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
     alerts = []
     controller.alert.connect(lambda *values: alerts.append(values))
 
-    controller.startTask("", "model", "low", 1)
-    controller.startTask("任务", "model", "low", 1)
+    controller.startTask("", "model", "low", 1, 400_000)
+    controller.startTask("任务", "model", "low", 1, 400_000)
     controller.setWorkspace(str(tmp_path / "missing"))
     file_path = tmp_path / "file.txt"
     file_path.write_text("x", encoding="utf-8")
@@ -283,8 +292,29 @@ def test_qml_controller_validates_workspace_task_and_history_errors(tmp_path: Pa
 
 
 @pytest.mark.gui_smoke
+def test_qml_api_config_does_not_follow_selected_workspace(tmp_path: Path) -> None:
+    config_directory = tmp_path / "sparrow"
+    first_workspace = tmp_path / "first"
+    second_workspace = tmp_path / "second"
+    config_directory.mkdir()
+    first_workspace.mkdir()
+    second_workspace.mkdir()
+    (config_directory / ".env").write_text("DEEPSEEK_API_KEY=fake\n", encoding="utf-8")
+    (second_workspace / ".env").write_text(
+        "DEEPSEEK_API_KEY=untrusted-target-key\n", encoding="utf-8"
+    )
+    controller = DesktopController(
+        first_workspace, config_directory=config_directory
+    )
+
+    assert controller.hasApiConfig is True
+    controller.setWorkspace(str(second_workspace))
+    assert controller.hasApiConfig is True
+
+
+@pytest.mark.gui_smoke
 def test_qml_controller_cancel_shutdown_and_terminal_states(tmp_path: Path) -> None:
-    controller = DesktopController(tmp_path)
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
     session = _CompletedSession()
     controller._session = session
 
@@ -331,13 +361,16 @@ def test_session_worker_emits_failure_without_raising() -> None:
 @pytest.mark.gui_smoke
 def test_qml_application_loads_home_and_history_pages(tmp_path: Path) -> None:
     _history_trace(tmp_path)
-    app, engine, controller = build_qml_application([], workspace=tmp_path)
+    app, engine, controller = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
     roots = engine.rootObjects()
 
     assert len(roots) == 1
     root = roots[0]
     assert root.objectName() == "sparrowMainWindow"
     assert root.findChild(QObject, "homePage").property("visible") is True
+    assert root.findChild(QObject, "tokenBudgetInput").property("value") == 400
 
     controller.loadHistory(0)
     app.processEvents()

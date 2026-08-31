@@ -75,13 +75,18 @@ cp -n .env.example .env
 默认入口使用 Qt Quick/QML 新界面；若需要排查平台兼容问题，可运行保留的
 `.venv/bin/sparrow-gui-legacy` 打开 Qt Widgets 兜底界面。
 
-桌面端与 CLI 读取同一个工作区 `.env`，不会把 API Key 保存到界面配置中。
+桌面端与 CLI 只读取 Sparrow 启动目录中的 `.env`，不会读取被操作代码仓库的配置文件，
+也不会把 API Key 保存到界面状态或运行轨迹中。请先进入 Sparrow 项目根目录再启动程序；
+切换目标工作区不会改变模型配置。
 启动页将任务输入作为唯一主动作；运行后用“理解—检查—修改—验证—完成”阶段轨迹和
 底部证据带持续显示进度。桌面端左侧会发现 `.sparrow/runs/` 中最近 20 次运行；点击记录后只做离线回放，
 不会请求模型或重新执行工具。对补丁、文本替换、重命名和删除操作，可从右侧打开
 轨迹中保存的修改细节；无法可靠还原的旧内容会明确标注。
 
-在本地 `.env` 中填写 `DEEPSEEK_API_KEY`，随后运行：
+运行设置可调整模型、推理强度、最大迭代次数和累计 Token 预算。默认预算为 `400000`，
+复杂工程可提高，简单任务可降低；达到上限时 Sparrow 会保留已有修改和轨迹并安全停止。
+
+在 Sparrow 项目根目录的 `.env` 中填写 `DEEPSEEK_API_KEY`，随后运行：
 
 ```bash
 .venv/bin/sparrow run "检查项目并修复测试失败" --workspace .
@@ -100,7 +105,7 @@ cp -n .env.example .env
 
 真实 API 冒烟测试默认跳过。将 `.env.example` 复制为不会被 Git 跟踪的 `.env`，
 在其中设置 `DEEPSEEK_API_KEY` 后，使用
-`pytest --run-api-smoke tests/test_api_smoke.py` 显式执行。测试只读取项目根目录的
+`pytest --run-api-smoke tests/test_api_smoke.py` 显式执行。测试只读取 Sparrow 项目根目录的
 `.env`，不会回退到全局环境；该测试固定采用
 `deepseek-v4-flash`、低推理强度和较小输出上限，并会产生少量 API 费用。
 

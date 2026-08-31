@@ -64,9 +64,10 @@ class SessionWorker(QObject):
 class MainWindow(QMainWindow):
     """Sparrow 的单工作区、单会话三栏主窗口。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, config_directory: str | Path | None = None) -> None:
         super().__init__()
         self._workspace = Path.cwd()
+        self._config_directory = Path(config_directory or Path.cwd()).resolve()
         self._session: AgentSession | None = None
         self._thread: QThread | None = None
         self._worker: SessionWorker | None = None
@@ -201,12 +202,19 @@ class MainWindow(QMainWindow):
         self.iterations_spin = QSpinBox()
         self.iterations_spin.setRange(1, 100)
         self.iterations_spin.setValue(20)
+        self.token_budget_spin = QSpinBox()
+        self.token_budget_spin.setRange(50_000, 2_000_000)
+        self.token_budget_spin.setSingleStep(50_000)
+        self.token_budget_spin.setValue(400_000)
+        self.token_budget_spin.setSuffix(" Tokens")
         settings_layout.addWidget(QLabel("模型"))
         settings_layout.addWidget(self.model_combo)
         settings_layout.addWidget(QLabel("推理强度"))
         settings_layout.addWidget(self.reasoning_combo)
         settings_layout.addWidget(QLabel("最大迭代次数"))
         settings_layout.addWidget(self.iterations_spin)
+        settings_layout.addWidget(QLabel("累计 Token 预算"))
+        settings_layout.addWidget(self.token_budget_spin)
         layout.addWidget(settings_box)
 
         changes_box = QGroupBox("真实工作区差异")
@@ -359,20 +367,22 @@ class MainWindow(QMainWindow):
         if not task:
             QMessageBox.information(self, "缺少任务", "请先描述要完成的编程任务。")
             return
-        if not (self._workspace / ".env").is_file():
+        if not (self._config_directory / ".env").is_file():
             QMessageBox.warning(
                 self,
                 "缺少本地配置",
-                "当前项目没有 .env，请先按 .env.example 配置 DeepSeek API Key。",
+                "Sparrow 启动目录没有 .env，请先在 Coding Agent 项目中配置 DeepSeek API Key。",
             )
             return
 
         config = SessionConfig(
             workspace=self._workspace,
             task=task,
+            config_directory=self._config_directory,
             model=self.model_combo.currentText().strip() or None,
             reasoning_effort=self.reasoning_combo.currentText(),
             max_iterations=self.iterations_spin.value(),
+            max_total_tokens=self.token_budget_spin.value(),
         )
         self._session = AgentSession(config)
         self._viewing_history = False
@@ -504,6 +514,7 @@ class MainWindow(QMainWindow):
         self.model_combo.setEnabled(not running)
         self.reasoning_combo.setEnabled(not running)
         self.iterations_spin.setEnabled(not running)
+        self.token_budget_spin.setEnabled(not running)
         self.history_list.setEnabled(not running)
         if running:
             self.state_badge.setText("正在运行")

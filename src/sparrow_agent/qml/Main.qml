@@ -185,6 +185,7 @@ ApplicationWindow {
 
     Popup {
         id: settingsPopup
+        objectName: "settingsPopup"
         x: root.width - width - 24
         y: 64
         width: 320
@@ -226,9 +227,26 @@ ApplicationWindow {
                 to: 100
                 value: 20
             }
+            SmallLabel { text: "累计 Token 预算（千）" }
+            SpinBox {
+                id: tokenBudgetInput
+                objectName: "tokenBudgetInput"
+                Layout.fillWidth: true
+                from: 50
+                to: 2000
+                stepSize: 50
+                value: 400
+            }
             Text {
                 Layout.fillWidth: true
-                text: controller.hasApiConfig ? "本地 API 配置已就绪" : "当前项目尚未配置 .env"
+                text: "达到上限时会安全停止；复杂工程建议 400k，简单任务可降低。"
+                color: root.textSecondary
+                font.pixelSize: 10
+                wrapMode: Text.Wrap
+            }
+            Text {
+                Layout.fillWidth: true
+                text: controller.hasApiConfig ? "Sparrow API 配置已就绪" : "Sparrow 启动目录尚未配置 .env"
                 color: controller.hasApiConfig ? root.jade : root.vermilion
                 font.pixelSize: 12
                 wrapMode: Text.Wrap
@@ -584,7 +602,8 @@ ApplicationWindow {
                                     homeTask.text,
                                     modelInput.editText,
                                     reasoningInput.currentText,
-                                    iterationInput.value
+                                    iterationInput.value,
+                                    tokenBudgetInput.value * 1000
                                 )
                             }
                         }

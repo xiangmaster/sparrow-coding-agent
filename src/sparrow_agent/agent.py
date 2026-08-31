@@ -35,7 +35,7 @@ class AgentSettings:
 
     max_iterations: int = 20
     repeated_action_limit: int = 3
-    max_total_tokens: int = 200_000
+    max_total_tokens: int = 400_000
     provider_retries: int = 2
     retry_base_seconds: float = 0.5
     max_observation_characters: int = 30_000

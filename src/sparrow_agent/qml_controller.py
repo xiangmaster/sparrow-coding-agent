@@ -72,10 +72,12 @@ class DesktopController(QObject):
         self,
         workspace: str | Path | None = None,
         *,
+        config_directory: str | Path | None = None,
         session_factory: Callable[[SessionConfig], _RunnableSession] = AgentSession,
     ) -> None:
         super().__init__()
         self._workspace = Path(workspace or Path.cwd()).resolve()
+        self._config_directory = Path(config_directory or Path.cwd()).resolve()
         self._state_key = "idle"
         self._state_text = "就绪"
         self._mode = "home"
@@ -91,6 +93,7 @@ class DesktopController(QObject):
         self._previews: list[dict[str, str]] = []
         self._iterations = 0
         self._total_tokens = 0
+        self._token_budget = 400_000
         self._phase = 0
         self._session_factory = session_factory
         self._session: _RunnableSession | None = None
@@ -108,7 +111,7 @@ class DesktopController(QObject):
 
     @Property(bool, notify=workspaceChanged)
     def hasApiConfig(self) -> bool:
-        return (self._workspace / ".env").is_file()
+        return (self._config_directory / ".env").is_file()
 
     @Property(str, notify=stateChanged)
     def stateKey(self) -> str:
@@ -169,6 +172,10 @@ class DesktopController(QObject):
     @Property(int, notify=contentChanged)
     def totalTokens(self) -> int:
         return self._total_tokens
+
+    @Property(int, notify=contentChanged)
+    def tokenBudget(self) -> int:
+        return self._token_budget
 
     @Property(int, notify=contentChanged)
     def phase(self) -> int:
@@ -271,9 +278,14 @@ class DesktopController(QObject):
         self._set_state("idle", "就绪")
         self.contentChanged.emit()
 
-    @Slot(str, str, str, int)
+    @Slot(str, str, str, int, int)
     def startTask(
-        self, task: str, model: str, reasoning_effort: str, max_iterations: int
+        self,
+        task: str,
+        model: str,
+        reasoning_effort: str,
+        max_iterations: int,
+        token_budget: int,
     ) -> None:
         if self._thread is not None:
             return
@@ -281,10 +293,10 @@ class DesktopController(QObject):
         if not task:
             self.alert.emit("还没有任务", "请先描述希望 Sparrow 完成什么。", "info")
             return
-        if not (self._workspace / ".env").is_file():
+        if not (self._config_directory / ".env").is_file():
             self.alert.emit(
                 "缺少本地配置",
-                "当前项目没有 .env，请先按 .env.example 配置 DeepSeek API Key。",
+                "Sparrow 启动目录没有 .env，请先在 Coding Agent 项目中配置 DeepSeek API Key。",
                 "error",
             )
             return
@@ -292,9 +304,11 @@ class DesktopController(QObject):
             config = SessionConfig(
                 workspace=self._workspace,
                 task=task,
+                config_directory=self._config_directory,
                 model=model.strip() or None,
                 reasoning_effort=reasoning_effort,
                 max_iterations=max_iterations,
+                max_total_tokens=token_budget,
             )
         except (TypeError, ValueError) as exc:
             self.alert.emit("运行配置无效", str(exc), "error")
@@ -325,6 +339,7 @@ class DesktopController(QObject):
         self._previews = []
         self._iterations = 0
         self._total_tokens = 0
+        self._token_budget = token_budget
         self._phase = 0
         self._set_state("running", "正在运行")
         self.contentChanged.emit()
@@ -360,7 +375,10 @@ class DesktopController(QObject):
             self._consume_tool_result(data)
         elif event.event == "run_finished":
             self._consume_run_finished(data)
-        self._status_text = f"第 {self._iterations} 轮 · {self._total_tokens:,} Tokens"
+        self._status_text = (
+            f"第 {self._iterations} 轮 · "
+            f"{self._total_tokens:,} / {self._token_budget:,} Tokens"
+        )
         self.contentChanged.emit()
 
     @Slot(object)
@@ -375,7 +393,7 @@ class DesktopController(QObject):
             self._set_state(result.stop_reason.value, _stop_reason_text(result.stop_reason.value))
         self._status_text = (
             f"{_stop_reason_text(result.stop_reason.value)} · {result.iterations} 轮 · "
-            f"{self._total_tokens:,} Tokens"
+            f"{self._total_tokens:,} / {self._token_budget:,} Tokens"
         )
         self.contentChanged.emit()
         self.refresh_history()

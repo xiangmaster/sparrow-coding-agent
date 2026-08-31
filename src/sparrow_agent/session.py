@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -37,9 +37,10 @@ class SessionConfig:
     model: str | None = None
     reasoning_effort: str | None = None
     max_iterations: int = 20
-    max_total_tokens: int = 200_000
+    max_total_tokens: int = 400_000
     max_context_characters: int = 120_000
     record: bool = True
+    config_directory: str | Path = field(default_factory=Path.cwd)
 
     def __post_init__(self) -> None:
         if not self.task.strip():
@@ -127,7 +128,7 @@ class AgentSession:
         try:
             workspace = Workspace(self.config.workspace)
             provider_settings = load_provider_settings(
-                workspace,
+                self.config.config_directory,
                 model=self.config.model,
                 reasoning_effort=self.config.reasoning_effort,
             )

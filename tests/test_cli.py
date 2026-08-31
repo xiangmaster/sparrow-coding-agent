@@ -50,6 +50,7 @@ def test_run_command_assembles_all_components_and_writes_replayable_trace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _write_env(tmp_path)
+    monkeypatch.chdir(tmp_path)
     provider = ScriptedProvider([_completion_response()])
     captured_settings = []
 
@@ -85,6 +86,7 @@ def test_run_command_honours_cli_overrides_and_no_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_env(tmp_path)
+    monkeypatch.chdir(tmp_path)
     provider = ScriptedProvider([_completion_response()])
     captured_settings = []
 
@@ -118,6 +120,7 @@ def test_run_command_returns_incomplete_exit_code_for_unapproved_answer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_env(tmp_path)
+    monkeypatch.chdir(tmp_path)
     plain_response = ModelResponse(
         message=Message(role=MessageRole.ASSISTANT, content="我完成了"),
         finish_reason="stop",
@@ -149,6 +152,7 @@ def test_run_command_requires_project_local_env_even_if_global_key_exists(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("DEEPSEEK_API_KEY", "global-key-must-not-be-used")
+    monkeypatch.chdir(tmp_path)
 
     exit_code = cli.main(
         ["run", "任务", "--workspace", str(tmp_path), "--no-record"]
@@ -160,10 +164,43 @@ def test_run_command_requires_project_local_env_even_if_global_key_exists(
     assert "global-key-must-not-be-used" not in output.err
 
 
+def test_run_command_uses_sparrow_env_not_target_workspace_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_directory = tmp_path / "sparrow"
+    workspace = tmp_path / "target"
+    config_directory.mkdir()
+    workspace.mkdir()
+    _write_env(config_directory)
+    (workspace / ".env").write_text(
+        "DEEPSEEK_API_KEY=target-key-must-not-be-used\n"
+        "SPARROW_MODEL=target-model\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(config_directory)
+    captured_settings = []
+
+    def fake_provider(settings):
+        captured_settings.append(settings)
+        return ScriptedProvider([_completion_response()])
+
+    monkeypatch.setattr(cli, "DeepSeekProvider", fake_provider)
+
+    exit_code = cli.main(
+        ["run", "任务", "--workspace", str(workspace), "--no-record"]
+    )
+
+    assert exit_code == 0
+    assert captured_settings[0].api_key == "local-test-key"
+    assert captured_settings[0].model == "deepseek-v4-flash"
+
+
 def test_run_command_records_cancelled_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _write_env(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
     class InterruptingProvider:
         def complete(self, messages, tools=()):

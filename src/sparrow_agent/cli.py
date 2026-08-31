@@ -38,17 +38,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "-w", "--workspace", default=".", help="项目工作区，默认是当前目录"
     )
-    run_parser.add_argument("--model", help="覆盖项目 .env 中的 SPARROW_MODEL")
+    run_parser.add_argument("--model", help="覆盖 Sparrow .env 中的 SPARROW_MODEL")
     run_parser.add_argument(
         "--reasoning-effort",
         choices=("low", "high", "max"),
-        help="覆盖项目 .env 中的推理强度",
+        help="覆盖 Sparrow .env 中的推理强度",
     )
     run_parser.add_argument(
         "--max-iterations", type=int, default=20, help="Agent 最大模型迭代次数"
     )
     run_parser.add_argument(
-        "--token-budget", type=int, default=200_000, help="单次运行累计 Token 上限"
+        "--token-budget", type=int, default=400_000, help="单次运行累计 Token 上限"
     )
     run_parser.add_argument(
         "--context-characters",
@@ -86,7 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _run_command(arguments: argparse.Namespace) -> int:
     workspace = Workspace(arguments.workspace)
     provider_settings = load_provider_settings(
-        workspace,
+        Path.cwd(),
         model=arguments.model,
         reasoning_effort=arguments.reasoning_effort,
     )

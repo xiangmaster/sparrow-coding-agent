@@ -17,6 +17,7 @@ def build_qml_application(
     argv: list[str] | None = None,
     *,
     workspace: str | Path | None = None,
+    config_directory: str | Path | None = None,
 ) -> tuple[QGuiApplication, QQmlApplicationEngine, DesktopController]:
     """构造应用、QML 引擎与控制器，供入口和离屏测试共用。"""
 
@@ -27,7 +28,7 @@ def build_qml_application(
     QCoreApplication.setOrganizationName("Sparrow")
     app.setFont(QFont("PingFang SC", 13))
     engine = QQmlApplicationEngine()
-    controller = DesktopController(workspace)
+    controller = DesktopController(workspace, config_directory=config_directory)
     QQmlEngine.setObjectOwnership(controller, QQmlEngine.ObjectOwnership.CppOwnership)
     engine._sparrow_controller = controller  # type: ignore[attr-defined]
     engine.rootContext().setContextProperty("controller", controller)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from sparrow_agent.config import read_environment_file
@@ -24,14 +25,14 @@ from sparrow_agent.workspace import Workspace
 
 
 def load_provider_settings(
-    workspace: Workspace,
+    config_directory: str | Path,
     *,
     model: str | None = None,
     reasoning_effort: str | None = None,
 ) -> DeepSeekSettings:
-    """只从目标工作区 `.env` 加载 Provider 配置并应用显式覆盖。"""
+    """从 Sparrow 自身配置目录加载 Provider 配置并应用显式覆盖。"""
 
-    environment = read_environment_file(workspace.root / ".env")
+    environment = read_environment_file(Path(config_directory).resolve() / ".env")
     if model:
         environment["SPARROW_MODEL"] = model
     if reasoning_effort:

@@ -25,6 +25,7 @@ def test_desktop_window_builds_three_panels_and_initial_controls() -> None:
     assert window.minimumSize().height() == 720
     assert window.start_button.isEnabled() is True
     assert window.stop_button.isEnabled() is False
+    assert window.token_budget_spin.value() == 400_000
     assert window.timeline.count() == 0
     assert window.gate_label.text() == "等待运行"
 
