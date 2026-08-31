@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from sparrow_agent.completion import CompletionGate
+from sparrow_agent.change_review import capture_change
 from sparrow_agent.context import Context
 from sparrow_agent.evidence import EvidenceLedger
 from sparrow_agent.models import AgentResult, MessageRole, StopReason, ToolCall, ToolResult
@@ -274,6 +275,7 @@ class Agent:
             for tool_call in calls:
                 if self._is_cancelled():
                     return self._finish(_cancelled_result(iteration))
+                change_capture = capture_change(self._workspace, tool_call)
                 result = self._tools.execute(tool_call)
                 snapshot = (
                     self._workspace.snapshot()
@@ -287,6 +289,19 @@ class Agent:
                 self._record_tool_result(
                     iteration, event_index, tool_call, result
                 )
+                if change_capture is not None:
+                    for preview in change_capture.finish(result):
+                        self._recorder.record(
+                            "change_preview",
+                            {
+                                "iteration": iteration,
+                                "event_index": event_index,
+                                "path": preview.path,
+                                "diff": preview.diff,
+                                "added": preview.added,
+                                "removed": preview.removed,
+                            },
+                        )
                 (
                     last_action_signature,
                     repeated_actions,

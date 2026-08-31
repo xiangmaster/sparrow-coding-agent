@@ -17,8 +17,13 @@ from PySide6.QtCore import QObject, QUrl  # noqa: E402
 from sparrow_agent.models import (  # noqa: E402
     AgentResult,
     CompletionRequest,
+    Message,
+    MessageRole,
     StopReason,
+    ToolCall,
 )
+from sparrow_agent.conversation import ConversationConfig, ConversationSession  # noqa: E402
+from sparrow_agent.provider import ModelResponse, ScriptedProvider  # noqa: E402
 from sparrow_agent.qml_app import (  # noqa: E402
     build_qml_application,
     dispose_qml_application,
@@ -26,10 +31,33 @@ from sparrow_agent.qml_app import (  # noqa: E402
 from sparrow_agent.qml_controller import (  # noqa: E402
     DesktopController,
     _SessionWorker,
+    _diff_lines,
     _present_event,
 )
 from sparrow_agent.recording import RunRecorder  # noqa: E402
 from sparrow_agent.session import SessionEvent  # noqa: E402
+
+
+def _completion_model_response(call_id: str, summary: str) -> ModelResponse:
+    return ModelResponse(
+        message=Message(
+            role=MessageRole.ASSISTANT,
+            content=None,
+            tool_calls=(
+                ToolCall(
+                    id=call_id,
+                    name="request_completion",
+                    arguments={
+                        "summary": summary,
+                        "changed_files": [],
+                        "verification_commands": [],
+                        "remaining_risks": [],
+                    },
+                ),
+            ),
+        ),
+        finish_reason="tool_calls",
+    )
 
 
 class _CompletedSession:
@@ -76,6 +104,49 @@ class _CompletedSession:
 class _FailingSession(_CompletedSession):
     def run(self) -> AgentResult:
         raise RuntimeError("模拟会话失败")
+
+
+class _MultiTurnSession(_CompletedSession):
+    def __init__(self, config=None) -> None:
+        super().__init__(config)
+        self.messages = []
+
+    def remove_listener(self, listener) -> None:
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def run_turn(self, message: str) -> AgentResult:
+        self.messages.append(message)
+        events = [
+            SessionEvent(1, "run_started", {"task": message}),
+            SessionEvent(
+                2,
+                "tool_result",
+                {
+                    "tool_name": "read_file",
+                    "ok": True,
+                    "arguments": {"arguments": {"path": "app.py"}},
+                    "metadata": {"workspace_changed_files": []},
+                },
+            ),
+            SessionEvent(
+                3,
+                "run_finished",
+                {
+                    "stop_reason": "completed",
+                    "completion_request": {"summary": f"已处理：{message}"},
+                },
+            ),
+        ]
+        for event in events:
+            for listener in tuple(self.listeners):
+                listener(event)
+        return AgentResult(
+            stop_reason=StopReason.COMPLETED,
+            final_text=f"已处理：{message}",
+            iterations=1,
+            completion_request=CompletionRequest(summary=f"已处理：{message}"),
+        )
 
 
 def _history_trace(workspace: Path) -> Path:
@@ -185,10 +256,24 @@ def test_qml_controller_live_events_advance_evidence_phases(tmp_path: Path) -> N
             },
         )
     )
+    controller._on_event(
+        SessionEvent(
+            sequence=4,
+            event="change_preview",
+            data={
+                "path": "app.py",
+                "diff": "--- a/app.py\n+++ b/app.py\n@@ -1 +1 @@\n-old\n+new\n",
+                "added": 1,
+                "removed": 1,
+            },
+        )
+    )
 
     assert controller.phase == 3
     assert controller.changedFiles == ["app.py"]
     assert controller.verificationText.startswith("✓ python -m unittest")
+    assert controller.previews[0]["summary"] == "+1  -1"
+    assert controller.previews[0]["lines"][3]["kind"] == "remove"
 
 
 @pytest.mark.gui_smoke
@@ -216,7 +301,7 @@ def test_qml_controller_runs_session_in_worker_and_collects_events(tmp_path: Pat
         time.sleep(0.005)
 
     assert controller.isBusy is False
-    assert configs[0].task == "检查项目"
+    assert configs[0].workspace == tmp_path
     assert configs[0].max_iterations == 8
     assert configs[0].max_total_tokens == 450_000
     assert controller.mode == "run"
@@ -226,6 +311,11 @@ def test_qml_controller_runs_session_in_worker_and_collects_events(tmp_path: Pat
     assert controller.totalTokens == 12
     assert controller.gateText == "证据检查通过\n已验证完成"
     assert len(controller.events) == 3
+    assert [message["kind"] for message in controller.conversationMessages] == [
+        "user",
+        "assistant",
+    ]
+    assert controller.conversationMessages[0]["text"] == "检查项目"
     dispose_qml_application(app, engine)
 
 
@@ -253,6 +343,101 @@ def test_qml_controller_reports_worker_failure(tmp_path: Path) -> None:
     assert controller.stateKey == "error"
     assert controller.gateText == "模拟会话失败"
     assert alerts[-1][0] == "Sparrow 运行失败"
+    dispose_qml_application(app, engine)
+
+
+@pytest.mark.gui_smoke
+def test_qml_controller_continues_the_same_conversation_session(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=fake\n", encoding="utf-8")
+    app, engine, _ = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
+    sessions = []
+
+    def factory(config):
+        session = _MultiTurnSession(config)
+        sessions.append(session)
+        return session
+
+    controller = DesktopController(
+        tmp_path, config_directory=tmp_path, session_factory=factory
+    )
+    controller.startTask("检查项目", "model", "low", 4, 400_000)
+    deadline = time.monotonic() + 2
+    while controller.isBusy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+    controller.continueTask("继续检查测试")
+    deadline = time.monotonic() + 2
+    while controller.isBusy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+
+    assert len(sessions) == 1
+    assert sessions[0].messages == ["检查项目", "继续检查测试"]
+    assert [item["kind"] for item in controller.conversationMessages] == [
+        "user",
+        "tool",
+        "assistant",
+        "user",
+        "tool",
+        "assistant",
+    ]
+    assert controller.conversationMessages[-1]["text"] == "已处理：继续检查测试"
+    dispose_qml_application(app, engine)
+
+
+@pytest.mark.gui_smoke
+def test_qml_controller_restores_thread_and_continues_after_restart(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=fake\n", encoding="utf-8")
+    first = ConversationSession(
+        ConversationConfig(workspace=tmp_path, config_directory=tmp_path),
+        provider_factory=lambda settings: ScriptedProvider(
+            [
+                _completion_model_response("first-complete", "第一轮完成"),
+            ]
+        ),
+    )
+    first.run_turn("先检查项目")
+    followup_provider = ScriptedProvider(
+        [_completion_model_response("second-complete", "第二轮完成")]
+    )
+
+    def factory(config, *, thread_id=None):
+        return ConversationSession(
+            config,
+            thread_id=thread_id,
+            provider_factory=lambda settings: followup_provider,
+        )
+
+    app, engine, _ = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
+    controller = DesktopController(
+        tmp_path, config_directory=tmp_path, session_factory=factory
+    )
+    assert controller.history[0]["title"] == "先检查项目"
+
+    controller.loadHistory(0)
+    assert controller.mode == "run"
+    assert [item["kind"] for item in controller.conversationMessages] == [
+        "user",
+        "tool",
+        "assistant",
+    ]
+    controller.continueTask("继续检查测试")
+    deadline = time.monotonic() + 2
+    while controller.isBusy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+
+    assert len(controller._session.thread.turns) == 2
+    users = [
+        message.content
+        for message in followup_provider.requests[0].messages
+        if message.role.value == "user"
+    ]
+    assert users == ["先检查项目", "继续检查测试"]
     dispose_qml_application(app, engine)
 
 
@@ -348,8 +533,27 @@ def test_qml_event_presenter_covers_control_events(name, data, expected) -> None
     assert _present_event(name, data, 1)["title"] == expected
 
 
+def test_qml_diff_lines_expose_line_numbers_and_visual_kinds() -> None:
+    lines = _diff_lines(
+        "--- a/app.py\n+++ b/app.py\n@@ -2,2 +2,2 @@\n-old\n+new\n same\n"
+    )
+
+    assert [item["kind"] for item in lines] == [
+        "file",
+        "file",
+        "hunk",
+        "remove",
+        "add",
+        "context",
+    ]
+    assert lines[3]["oldLine"] == "2"
+    assert lines[4]["newLine"] == "2"
+    assert lines[5]["oldLine"] == "3"
+    assert lines[5]["newLine"] == "3"
+
+
 def test_session_worker_emits_failure_without_raising() -> None:
-    worker = _SessionWorker(_FailingSession())
+    worker = _SessionWorker(_FailingSession(), "任务")
     errors = []
     worker.failed.connect(errors.append)
 
@@ -377,6 +581,9 @@ def test_qml_application_loads_home_and_history_pages(tmp_path: Path) -> None:
 
     assert root.findChild(QObject, "runPage").property("visible") is True
     assert root.findChild(QObject, "homePage").property("visible") is False
+    assert root.findChild(QObject, "conversationList") is not None
+    assert root.findChild(QObject, "conversationComposer") is not None
+    assert root.findChild(QObject, "continueTaskButton") is not None
     dispose_qml_application(app, engine)
 
 

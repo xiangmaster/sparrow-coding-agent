@@ -109,8 +109,12 @@ sys.exit(0 if value == 'final' else 1)
             _completion_response(["value.txt"], [command]),
         ]
     )
+    recorder = MemoryRecorder()
     agent = Agent(
-        provider, _real_registry(tmp_path), workspace=Workspace(tmp_path)
+        provider,
+        _real_registry(tmp_path),
+        workspace=Workspace(tmp_path),
+        recorder=recorder,
     )
 
     result = agent.run("把 value.txt 修改为 final，并运行验证。")
@@ -131,6 +135,10 @@ sys.exit(0 if value == 'final' else 1)
     assert "old" in first_observation["output"]
     assert provider.remaining_responses == 0
     assert provider.requests[0].tools[-1]["function"]["name"] == "request_completion"
+    previews = [event for event in recorder.events if event.event == "change_preview"]
+    assert len(previews) == 2
+    assert previews[-1].data["path"] == "value.txt"
+    assert "+final" in previews[-1].data["diff"]
 
 
 def test_agent_rejects_premature_completion_then_allows_recovery(

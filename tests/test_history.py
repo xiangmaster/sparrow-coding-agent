@@ -39,6 +39,18 @@ def _write_completed_trace(workspace: Path, run_id: str = "history") -> Path:
             },
         )
         recorder.record(
+            "change_preview",
+            {
+                "path": "price.py",
+                "diff": (
+                    "--- a/price.py\n+++ b/price.py\n@@ -1 +1 @@\n"
+                    "-if total > 99:\n+if total >= 99:\n"
+                ),
+                "added": 1,
+                "removed": 1,
+            },
+        )
+        recorder.record(
             "run_finished",
             {
                 "stop_reason": "completed",

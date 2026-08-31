@@ -150,6 +150,34 @@ class ConversationStore:
             raise ConversationError(f"无法读取对话：{path}") from exc
         return _parse_thread(value, expected_id=thread_id, workspace=self._root)
 
+    def discover(self, *, limit: int = 50) -> tuple[ConversationThread, ...]:
+        """按最近更新时间发现可安全读取的任务会话。"""
+
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100:
+            raise ValueError("limit 必须是 1 到 100 的整数")
+        try:
+            directory = self._thread_directory(create=False)
+            candidates = sorted(
+                (
+                    path
+                    for path in directory.iterdir()
+                    if path.is_file() and not path.is_symlink() and path.suffix == ".json"
+                ),
+                key=lambda path: path.stat().st_mtime,
+                reverse=True,
+            )
+        except (ConversationError, OSError):
+            return ()
+        threads: list[ConversationThread] = []
+        for path in candidates:
+            if len(threads) >= limit or _ID_PATTERN.fullmatch(path.stem) is None:
+                continue
+            try:
+                threads.append(self.load(path.stem))
+            except ConversationError:
+                continue
+        return tuple(threads)
+
     def _thread_directory(self, *, create: bool) -> Path:
         internal = self._root / ".sparrow"
         directory = internal / "threads"
@@ -227,6 +255,14 @@ class ConversationSession:
 
     def add_listener(self, listener: ConversationListener) -> None:
         self._listeners.append(listener)
+
+    def remove_listener(self, listener: ConversationListener) -> None:
+        """移除桌面端某一轮使用的临时事件桥。"""
+
+        try:
+            self._listeners.remove(listener)
+        except ValueError:
+            return
 
     def cancel(self) -> bool:
         with self._state_lock:

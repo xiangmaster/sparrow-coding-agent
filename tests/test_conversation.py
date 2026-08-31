@@ -1,6 +1,7 @@
 """多轮对话会话及其本地持久化测试。"""
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -176,3 +177,28 @@ def test_conversation_store_rejects_invalid_id_and_workspace(tmp_path: Path) -> 
 
     with pytest.raises(ConversationError, match="不属于当前工作区"):
         ConversationStore(other).load(session.thread.id)
+
+
+def test_conversation_store_discovers_recent_valid_threads(tmp_path: Path) -> None:
+    _write_env(tmp_path)
+    sessions = []
+    for index in range(2):
+        session = ConversationSession(
+            ConversationConfig(workspace=tmp_path, config_directory=tmp_path, record=False),
+            provider_factory=lambda settings, index=index: ScriptedProvider(
+                [_completion(f"done-{index}", f"完成 {index}")]
+            ),
+        )
+        session.run_turn(f"任务 {index}")
+        sessions.append(session)
+    first_path = (
+        tmp_path / ".sparrow" / "threads" / f"{sessions[0].thread.id}.json"
+    )
+    os.utime(first_path, (1, 1))
+    (first_path.parent / "broken.json").write_text("bad", encoding="utf-8")
+
+    discovered = ConversationStore(tmp_path).discover()
+
+    assert [thread.title for thread in discovered] == ["任务 1", "任务 0"]
+    with pytest.raises(ValueError, match="limit"):
+        ConversationStore(tmp_path).discover(limit=0)

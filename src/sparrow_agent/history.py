@@ -129,6 +129,7 @@ def load_history_run(workspace: str | Path, trace_path: str | Path) -> HistoryRu
     verification_text = "尚无验证"
     gate_text = "轨迹没有结束事件"
     previews: list[ChangePreview] = []
+    fallback_previews: list[ChangePreview] = []
     for event in events:
         data = event.data
         if event.event == "model_response":
@@ -153,7 +154,12 @@ def load_history_run(workspace: str | Path, trace_path: str | Path) -> HistoryRu
                     )
             preview = _change_preview(event)
             if preview is not None:
-                previews.append(preview)
+                fallback_previews.append(preview)
+        elif event.event == "change_preview":
+            path = data.get("path")
+            diff = data.get("diff")
+            if isinstance(path, str) and isinstance(diff, str) and diff.strip():
+                previews.append(ChangePreview(path, diff))
         elif event.event == "run_finished":
             value = data.get("stop_reason")
             stop_reason = value if isinstance(value, str) else None
@@ -198,7 +204,7 @@ def load_history_run(workspace: str | Path, trace_path: str | Path) -> HistoryRu
         changed_files=tuple(sorted(changed_files)),
         verification_text=verification_text,
         gate_text=gate_text,
-        previews=tuple(previews),
+        previews=tuple(previews or fallback_previews),
     )
 
 

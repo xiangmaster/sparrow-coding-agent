@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from PySide6.QtCore import QObject, Property, QThread, QUrl, Signal, Slot
 
+from sparrow_agent.conversation import (
+    ConversationConfig,
+    ConversationError,
+    ConversationSession,
+    ConversationStore,
+    ConversationThread,
+)
 from sparrow_agent.history import ChangePreview, discover_history, load_history_run
 from sparrow_agent.models import AgentResult, StopReason
 from sparrow_agent.recording import RecordedEvent, RecordingError
-from sparrow_agent.session import AgentSession, SessionConfig, SessionEvent
+from sparrow_agent.session import SessionEvent
 
 _MAX_DISPLAYED_EVENTS = 500
 _TOOL_LABELS = {
@@ -36,7 +45,9 @@ class _RunnableSession(Protocol):
 
     def add_listener(self, listener: Callable[[SessionEvent], None]) -> None: ...
 
-    def run(self) -> AgentResult: ...
+    def remove_listener(self, listener: Callable[[SessionEvent], None]) -> None: ...
+
+    def run_turn(self, message: str) -> AgentResult: ...
 
     def cancel(self) -> bool: ...
 
@@ -46,17 +57,27 @@ class _SessionWorker(QObject):
     completed = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, session: _RunnableSession) -> None:
+    def __init__(self, session: _RunnableSession, message: str) -> None:
         super().__init__()
         self._session = session
-        self._session.add_listener(self.event_received.emit)
+        self._message = message
+        self._listener = self.event_received.emit
+        self._session.add_listener(self._listener)
 
     @Slot()
     def run(self) -> None:
         try:
-            self.completed.emit(self._session.run())
+            run_turn = getattr(self._session, "run_turn", None)
+            result = run_turn(self._message) if run_turn is not None else self._session.run()
+            self.completed.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+    @Slot()
+    def detach(self) -> None:
+        remove_listener = getattr(self._session, "remove_listener", None)
+        if remove_listener is not None:
+            remove_listener(self._listener)
 
 
 class DesktopController(QObject):
@@ -73,7 +94,7 @@ class DesktopController(QObject):
         workspace: str | Path | None = None,
         *,
         config_directory: str | Path | None = None,
-        session_factory: Callable[[SessionConfig], _RunnableSession] = AgentSession,
+        session_factory: Callable[[ConversationConfig], _RunnableSession] = ConversationSession,
     ) -> None:
         super().__init__()
         self._workspace = Path(workspace or Path.cwd()).resolve()
@@ -83,14 +104,15 @@ class DesktopController(QObject):
         self._mode = "home"
         self._task_text = ""
         self._events: list[dict[str, Any]] = []
+        self._conversation_messages: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
-        self._history_paths: list[Path] = []
+        self._history_refs: list[tuple[str, str | Path]] = []
         self._changed_files: list[str] = []
         self._verification_text = "等待验证"
         self._gate_text = "等待运行"
         self._status_text = "描述任务，Sparrow 会用本地证据证明它已经完成。"
         self._trace_path = ""
-        self._previews: list[dict[str, str]] = []
+        self._previews: list[dict[str, Any]] = []
         self._iterations = 0
         self._total_tokens = 0
         self._token_budget = 400_000
@@ -137,6 +159,10 @@ class DesktopController(QObject):
     def events(self) -> list[dict[str, Any]]:
         return self._events
 
+    @Property("QVariantList", notify=contentChanged)
+    def conversationMessages(self) -> list[dict[str, Any]]:
+        return self._conversation_messages
+
     @Property("QVariantList", notify=historyChanged)
     def history(self) -> list[dict[str, Any]]:
         return self._history
@@ -162,7 +188,7 @@ class DesktopController(QObject):
         return self._trace_path
 
     @Property("QVariantList", notify=contentChanged)
-    def previews(self) -> list[dict[str, str]]:
+    def previews(self) -> list[dict[str, Any]]:
         return self._previews
 
     @Property(int, notify=contentChanged)
@@ -202,9 +228,35 @@ class DesktopController(QObject):
 
     @Slot()
     def refresh_history(self) -> None:
-        entries = discover_history(self._workspace)
-        self._history_paths = [entry.trace_path for entry in entries]
-        self._history = [
+        threads = ConversationStore(self._workspace).discover()
+        recorded_turn_paths = {
+            (self._workspace / turn.trace_path).resolve()
+            for thread in threads
+            for turn in thread.turns
+            if turn.trace_path
+        }
+        runs = tuple(
+            entry
+            for entry in discover_history(self._workspace)
+            if entry.trace_path.resolve() not in recorded_turn_paths
+        )
+        self._history_refs = [
+            *(("thread", thread.id) for thread in threads),
+            *(("run", entry.trace_path) for entry in runs),
+        ]
+        thread_items = [
+            {
+                "runId": thread.id,
+                "shortId": thread.id[:10],
+                "title": thread.title,
+                "time": _short_timestamp(thread.updated_at),
+                "stateKey": _thread_state(thread),
+                "stateText": f"{len(thread.turns)} 轮 · {_short_stop_reason(_thread_state(thread))}",
+                "path": thread.id,
+            }
+            for thread in threads
+        ]
+        run_items = [
             {
                 "runId": entry.run_id,
                 "shortId": entry.run_id[:10],
@@ -214,23 +266,39 @@ class DesktopController(QObject):
                 "stateText": _short_stop_reason(entry.stop_reason),
                 "path": str(entry.trace_path),
             }
-            for entry in entries
+            for entry in runs
         ]
+        self._history = [*thread_items, *run_items]
         self.historyChanged.emit()
 
     @Slot(int)
     def loadHistory(self, index: int) -> None:
-        if self._thread is not None or not 0 <= index < len(self._history_paths):
+        if self._thread is not None or not 0 <= index < len(self._history_refs):
+            return
+        kind, reference = self._history_refs[index]
+        if kind == "thread":
+            self._load_conversation(str(reference))
             return
         try:
-            run = load_history_run(self._workspace, self._history_paths[index])
+            run = load_history_run(self._workspace, Path(reference))
         except RecordingError as exc:
             self._set_state("error", "轨迹损坏")
             self.alert.emit("无法读取历史记录", str(exc), "error")
             return
 
+        self._session = None
+
         recorded_events = run.events[:_MAX_DISPLAYED_EVENTS]
         self._events = [_present_recorded_event(event) for event in recorded_events]
+        self._conversation_messages = [
+            {"kind": "user", "text": run.task, "title": "你", "tone": "neutral"},
+            {
+                "kind": "assistant",
+                "text": run.gate_text,
+                "title": "Sparrow",
+                "tone": "success" if run.stop_reason == "completed" else "error",
+            },
+        ]
         hidden = len(run.events) - len(recorded_events)
         if hidden:
             self._events.append(
@@ -259,13 +327,95 @@ class DesktopController(QObject):
         self._set_state(run.stop_reason or "unknown", _stop_reason_text(run.stop_reason))
         self.contentChanged.emit()
 
+    def _load_conversation(self, thread_id: str) -> None:
+        try:
+            thread = ConversationStore(self._workspace).load(thread_id)
+            config = ConversationConfig(
+                workspace=self._workspace,
+                config_directory=self._config_directory,
+                max_total_tokens=self._token_budget,
+            )
+            self._session = self._session_factory(config, thread_id=thread_id)  # type: ignore[call-arg]
+        except (ConversationError, TypeError, ValueError) as exc:
+            self._set_state("error", "会话损坏")
+            self.alert.emit("无法恢复任务会话", str(exc), "error")
+            return
+
+        messages: list[dict[str, Any]] = []
+        events: list[dict[str, Any]] = []
+        previews: list[dict[str, Any]] = []
+        changed_files: set[str] = set()
+        verification_text = "尚无验证"
+        gate_text = "等待继续对话"
+        trace_path = ""
+        phase = 0
+        for turn in thread.turns:
+            messages.append(
+                {"kind": "user", "text": turn.user_message, "title": "你", "tone": "neutral"}
+            )
+            if turn.trace_path:
+                try:
+                    run = load_history_run(self._workspace, self._workspace / turn.trace_path)
+                except RecordingError:
+                    run = None
+                if run is not None:
+                    for event in run.events:
+                        if len(events) < _MAX_DISPLAYED_EVENTS:
+                            events.append(_present_recorded_event(event))
+                        if event.event == "tool_result":
+                            presented = _present_recorded_event(event)
+                            messages.append(
+                                {
+                                    "kind": "tool",
+                                    "title": presented["title"],
+                                    "text": presented["detail"],
+                                    "tone": presented["tone"],
+                                }
+                            )
+                    previews.extend(_preview_dict(item) for item in run.previews)
+                    changed_files.update(run.changed_files)
+                    verification_text = run.verification_text
+                    gate_text = run.gate_text
+                    trace_path = str(run.entry.trace_path)
+                    phase = max(phase, _phase_from_events(run.events))
+            if turn.assistant_text:
+                messages.append(
+                    {
+                        "kind": "assistant",
+                        "text": turn.assistant_text,
+                        "title": "Sparrow",
+                        "tone": "success" if turn.stop_reason == "completed" else "error",
+                    }
+                )
+
+        self._mode = "run"
+        self._task_text = thread.title
+        self._conversation_messages = messages
+        self._events = events
+        self._previews = previews
+        self._changed_files = sorted(changed_files)
+        self._verification_text = verification_text
+        self._gate_text = gate_text
+        self._trace_path = trace_path
+        self._iterations = sum(turn.iterations for turn in thread.turns)
+        self._total_tokens = sum(turn.total_tokens for turn in thread.turns)
+        self._phase = 4 if _thread_state(thread) == "completed" else phase
+        state = _thread_state(thread)
+        self._set_state(state, _stop_reason_text(state))
+        self._status_text = (
+            f"已恢复 {len(thread.turns)} 轮对话 · {self._total_tokens:,} Tokens · 可继续发送消息"
+        )
+        self.contentChanged.emit()
+
     @Slot()
     def newTask(self) -> None:
         if self._thread is not None:
             return
         self._mode = "home"
+        self._session = None
         self._task_text = ""
         self._events = []
+        self._conversation_messages = []
         self._changed_files = []
         self._verification_text = "等待验证"
         self._gate_text = "等待运行"
@@ -301,9 +451,8 @@ class DesktopController(QObject):
             )
             return
         try:
-            config = SessionConfig(
+            config = ConversationConfig(
                 workspace=self._workspace,
-                task=task,
                 config_directory=self._config_directory,
                 model=model.strip() or None,
                 reasoning_effort=reasoning_effort,
@@ -315,8 +464,28 @@ class DesktopController(QObject):
             return
 
         self._session = self._session_factory(config)
+        self._token_budget = token_budget
+        self._begin_turn(task, reset=True)
+
+    @Slot(str)
+    def continueTask(self, message: str) -> None:
+        """在当前任务中追加一条用户消息并继续运行。"""
+
+        if self._thread is not None:
+            return
+        message = message.strip()
+        if not message:
+            self.alert.emit("还没有消息", "请输入希望 Sparrow 继续处理的内容。", "info")
+            return
+        if self._session is None or self._mode != "run":
+            self.alert.emit("无法继续", "请先开始一个新任务。", "error")
+            return
+        self._begin_turn(message, reset=False)
+
+    def _begin_turn(self, message: str, *, reset: bool) -> None:
+        assert self._session is not None
         self._thread = QThread(self)
-        self._worker = _SessionWorker(self._session)
+        self._worker = _SessionWorker(self._session, message)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.event_received.connect(self._on_event)
@@ -325,21 +494,26 @@ class DesktopController(QObject):
         self._worker.completed.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
         self._thread.finished.connect(self._worker.deleteLater)
+        self._thread.finished.connect(self._worker.detach)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.finished.connect(self._cleanup_thread)
 
         self._mode = "run"
-        self._task_text = task
-        self._events = []
-        self._changed_files = []
+        if reset:
+            self._task_text = message
+            self._events = []
+            self._conversation_messages = []
+            self._changed_files = []
+            self._previews = []
+            self._total_tokens = 0
+        self._conversation_messages.append(
+            {"kind": "user", "text": message, "title": "你", "tone": "neutral"}
+        )
         self._verification_text = "等待 Agent 运行验证命令"
         self._gate_text = "正在收集本地完成证据"
         self._status_text = "正在建立工作区快照……"
         self._trace_path = ""
-        self._previews = []
         self._iterations = 0
-        self._total_tokens = 0
-        self._token_budget = token_budget
         self._phase = 0
         self._set_state("running", "正在运行")
         self.contentChanged.emit()
@@ -373,6 +547,27 @@ class DesktopController(QObject):
                 self._total_tokens += _plain_int(usage.get("total_tokens"))
         elif event.event == "tool_result":
             self._consume_tool_result(data)
+            presented = _present_session_event(event)
+            self._conversation_messages.append(
+                {
+                    "kind": "tool",
+                    "title": presented["title"],
+                    "text": presented["detail"],
+                    "tone": presented["tone"],
+                }
+            )
+        elif event.event == "change_preview":
+            path = data.get("path")
+            diff = data.get("diff")
+            if isinstance(path, str) and isinstance(diff, str) and diff.strip():
+                self._previews.append(
+                    _preview_payload(
+                        path,
+                        diff,
+                        added=_plain_int(data.get("added")),
+                        removed=_plain_int(data.get("removed")),
+                    )
+                )
         elif event.event == "run_finished":
             self._consume_run_finished(data)
         self._status_text = (
@@ -395,6 +590,14 @@ class DesktopController(QObject):
             f"{_stop_reason_text(result.stop_reason.value)} · {result.iterations} 轮 · "
             f"{self._total_tokens:,} / {self._token_budget:,} Tokens"
         )
+        self._conversation_messages.append(
+            {
+                "kind": "assistant",
+                "title": "Sparrow",
+                "text": result.final_text,
+                "tone": "success" if result.stop_reason is StopReason.COMPLETED else "error",
+            }
+        )
         self.contentChanged.emit()
         self.refresh_history()
 
@@ -403,6 +606,9 @@ class DesktopController(QObject):
         self._set_state("error", "运行失败")
         self._gate_text = message
         self._status_text = "运行失败"
+        self._conversation_messages.append(
+            {"kind": "assistant", "title": "Sparrow", "text": message, "tone": "error"}
+        )
         self.contentChanged.emit()
         self.alert.emit("Sparrow 运行失败", message, "error")
 
@@ -538,8 +744,80 @@ def _tool_detail(data: Mapping[str, Any]) -> str:
     return _one_line(output) or "操作成功"
 
 
-def _preview_dict(preview: ChangePreview) -> dict[str, str]:
-    return {"title": preview.title, "text": preview.text}
+def _preview_dict(preview: ChangePreview) -> dict[str, Any]:
+    return _preview_payload(preview.title, preview.text)
+
+
+_HUNK_RANGE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+
+def _preview_payload(
+    title: str, text: str, *, added: int | None = None, removed: int | None = None
+) -> dict[str, Any]:
+    lines = _diff_lines(text)
+    if added is None:
+        added = sum(item["kind"] == "add" for item in lines)
+    if removed is None:
+        removed = sum(item["kind"] == "remove" for item in lines)
+    visible = [
+        item["text"]
+        for item in lines
+        if item["kind"] in {"add", "remove", "context"}
+    ][:10]
+    hover = f"+{added}  -{removed}"
+    if visible:
+        hover += "\n\n" + "\n".join(visible)
+    return {
+        "title": title,
+        "text": text,
+        "added": added,
+        "removed": removed,
+        "summary": f"+{added}  -{removed}",
+        "hoverText": hover,
+        "lines": lines,
+    }
+
+
+def _diff_lines(text: str) -> list[dict[str, Any]]:
+    old_line = 0
+    new_line = 0
+    result: list[dict[str, Any]] = []
+    for raw in text.splitlines():
+        kind = "context"
+        old_value: int | str = ""
+        new_value: int | str = ""
+        if raw.startswith(("--- ", "+++ ")):
+            kind = "file"
+        elif raw.startswith("@@"):
+            kind = "hunk"
+            match = _HUNK_RANGE.match(raw)
+            if match is not None:
+                old_line = int(match.group(1))
+                new_line = int(match.group(2))
+        elif raw.startswith("+"):
+            kind = "add"
+            new_value = new_line
+            new_line += 1
+        elif raw.startswith("-"):
+            kind = "remove"
+            old_value = old_line
+            old_line += 1
+        elif raw.startswith("\\"):
+            kind = "meta"
+        else:
+            old_value = old_line
+            new_value = new_line
+            old_line += 1
+            new_line += 1
+        result.append(
+            {
+                "kind": kind,
+                "oldLine": str(old_value),
+                "newLine": str(new_value),
+                "text": raw,
+            }
+        )
+    return result
 
 
 def _phase_from_events(events: tuple[RecordedEvent, ...]) -> int:
@@ -578,6 +856,20 @@ def _short_stop_reason(stop_reason: str | None) -> str:
         "provider_error": "请求失败",
         "budget_exceeded": "超出预算",
     }.get(stop_reason, "未结束")
+
+
+def _thread_state(thread: ConversationThread) -> str:
+    if not thread.turns:
+        return "idle"
+    last = thread.turns[-1]
+    return last.stop_reason or last.status.value
+
+
+def _short_timestamp(value: str) -> str:
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime("%m-%d %H:%M")
+    except ValueError:
+        return "时间未知"
 
 
 def _one_line(value: Any) -> str:

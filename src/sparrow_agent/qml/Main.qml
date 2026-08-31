@@ -32,6 +32,11 @@ ApplicationWindow {
 
     property int selectedPreview: 0
 
+    function showDiff(index) {
+        selectedPreview = index
+        diffDialog.open()
+    }
+
     function toneColor(tone) {
         if (tone === "success") return jade
         if (tone === "error") return vermilion
@@ -145,7 +150,7 @@ ApplicationWindow {
         padding: 0
         title: controller.previews.length > selectedPreview
                ? controller.previews[selectedPreview].title : "修改细节"
-        standardButtons: Dialog.Close
+        standardButtons: Dialog.NoButton
         background: Rectangle {
             color: root.inkRaised
             radius: 14
@@ -163,22 +168,107 @@ ApplicationWindow {
                 font.pixelSize: 16
                 font.weight: Font.DemiBold
             }
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 22
+                anchors.verticalCenter: parent.verticalCenter
+                text: controller.previews.length > selectedPreview
+                      ? controller.previews[selectedPreview].summary : ""
+                color: root.brandBright
+                font.family: "Menlo"
+                font.pixelSize: 11
+                font.weight: Font.DemiBold
+            }
         }
         contentItem: Rectangle {
             color: "#111116"
-            TextArea {
+            ListView {
+                id: diffList
                 anchors.fill: parent
                 anchors.margins: 18
-                readOnly: true
-                wrapMode: TextEdit.NoWrap
-                selectByMouse: true
-                text: controller.previews.length > selectedPreview
-                      ? controller.previews[selectedPreview].text : ""
-                color: "#D9D5E0"
-                selectionColor: root.brand
-                font.family: "Menlo"
-                font.pixelSize: 12
-                background: null
+                clip: true
+                spacing: 0
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { }
+                model: controller.previews.length > selectedPreview
+                       ? controller.previews[selectedPreview].lines : []
+                delegate: Rectangle {
+                    required property var modelData
+                    width: diffList.width
+                    height: modelData.kind === "file" ? 31 : 25
+                    color: modelData.kind === "add" ? "#14372D"
+                         : modelData.kind === "remove" ? "#43231F"
+                         : modelData.kind === "hunk" ? "#182C32"
+                         : modelData.kind === "file" ? "#1C1C23"
+                         : "transparent"
+                    RowLayout {
+                        anchors.fill: parent
+                        spacing: 0
+                        Rectangle {
+                            Layout.preferredWidth: 47
+                            Layout.fillHeight: true
+                            color: modelData.kind === "add" ? "#194538"
+                                 : modelData.kind === "remove" ? "#542A25" : "#17171C"
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.oldLine
+                                color: "#706D78"
+                                font.family: "Menlo"
+                                font.pixelSize: 10
+                            }
+                        }
+                        Rectangle {
+                            Layout.preferredWidth: 47
+                            Layout.fillHeight: true
+                            color: modelData.kind === "add" ? "#194538"
+                                 : modelData.kind === "remove" ? "#542A25" : "#17171C"
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.newLine
+                                color: "#706D78"
+                                font.family: "Menlo"
+                                font.pixelSize: 10
+                            }
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            Layout.leftMargin: 12
+                            text: modelData.text
+                            color: modelData.kind === "add" ? "#A9E9C9"
+                                 : modelData.kind === "remove" ? "#F0B6AD"
+                                 : modelData.kind === "hunk" ? "#80C9D6"
+                                 : "#D9D5E0"
+                            font.family: "Menlo"
+                            font.pixelSize: 11
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
+            }
+        }
+        footer: Rectangle {
+            implicitHeight: 58
+            color: root.inkRaised
+            Button {
+                anchors.right: parent.right
+                anchors.rightMargin: 18
+                anchors.verticalCenter: parent.verticalCenter
+                width: 78
+                height: 34
+                text: "关闭"
+                onClicked: diffDialog.close()
+                contentItem: Text {
+                    text: parent.text
+                    color: "white"
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                background: Rectangle {
+                    radius: 8
+                    color: parent.hovered ? "#0C7867" : root.brand
+                }
             }
         }
     }
@@ -406,7 +496,7 @@ ApplicationWindow {
                     Layout.topMargin: 14
                     Layout.fillWidth: true
                     Text {
-                        text: "运行档案"
+                        text: "任务会话"
                         color: "#AAA6B2"
                         font.pixelSize: 11
                         font.weight: Font.DemiBold
@@ -488,7 +578,7 @@ ApplicationWindow {
                     Text {
                         anchors.centerIn: parent
                         visible: historyList.count === 0
-                        text: "还没有运行记录\n完成一次任务后会出现在这里"
+                        text: "还没有任务会话\n开始对话后会出现在这里"
                         color: "#686570"
                         font.pixelSize: 11
                         horizontalAlignment: Text.AlignHCenter
@@ -624,10 +714,10 @@ ApplicationWindow {
             }
 
             Item {
-                id: runPage
-                objectName: "runPage"
+                id: legacyRunPage
+                objectName: "legacyRunPage"
                 anchors.fill: parent
-                visible: controller.mode !== "home"
+                visible: false
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -962,6 +1052,24 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            ConversationPage {
+                id: runPage
+                objectName: "runPage"
+                anchors.fill: parent
+                visible: controller.mode !== "home"
+                backend: controller
+                hostWindow: root
+                paper: root.paper
+                paperRaised: root.paperRaised
+                textPrimary: root.textPrimary
+                textSecondary: root.textSecondary
+                line: root.line
+                brand: root.brand
+                brandSoft: root.brandSoft
+                jade: root.jade
+                vermilion: root.vermilion
             }
         }
     }
