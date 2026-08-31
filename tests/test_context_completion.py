@@ -73,6 +73,39 @@ def test_context_rejects_wrong_roles_and_empty_feedback() -> None:
         context.append_assistant(Message(role=MessageRole.USER, content="错误角色"))
     with pytest.raises(ValueError, match="不能为空"):
         context.append_control_feedback(" ")
+    with pytest.raises(ValueError, match="不能为空"):
+        context.append_user(" ")
+
+
+def test_context_restores_and_compacts_multi_turn_user_messages() -> None:
+    context = Context(
+        "系统规则",
+        "第一轮任务",
+        max_observation_characters=500,
+        max_context_characters=1_000,
+        max_summary_characters=300,
+    )
+    for index in range(3):
+        context.append_assistant(
+            Message(role=MessageRole.ASSISTANT, content="结论" + "x" * 220)
+        )
+        context.append_user(f"第 {index + 2} 轮继续检查" + "y" * 100)
+
+    restored = Context.from_messages(
+        context.messages,
+        max_observation_characters=500,
+        max_context_characters=1_000,
+        max_summary_characters=300,
+    )
+    restored.append_assistant(Message(role=MessageRole.ASSISTANT, content="最新结论"))
+
+    messages = restored.messages
+    assert messages[0].role is MessageRole.SYSTEM
+    assert messages[1].content == "第一轮任务"
+    assert "较早历史事实摘要" in (messages[0].content or "")
+    visible_text = "\n".join(message.content or "" for message in messages)
+    assert "继续检查" in visible_text
+    assert messages[-1].content == "最新结论"
 
 
 def test_context_compacts_old_turns_without_splitting_recent_tool_chain() -> None:

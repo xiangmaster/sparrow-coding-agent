@@ -52,6 +52,34 @@ class Context:
         self._summary_facts: list[str] = []
         self._compacted_turns = 0
 
+    @classmethod
+    def from_messages(
+        cls,
+        messages: Sequence[Message],
+        *,
+        max_observation_characters: int = _DEFAULT_MAX_OBSERVATION_CHARACTERS,
+        max_context_characters: int = _DEFAULT_MAX_CONTEXT_CHARACTERS,
+        max_summary_characters: int | None = None,
+    ) -> Context:
+        """从已持久化的 Provider 消息恢复可继续追加的上下文。"""
+
+        restored = tuple(messages)
+        if len(restored) < 2:
+            raise ValueError("恢复上下文至少需要系统消息和首条用户消息")
+        if restored[0].role is not MessageRole.SYSTEM:
+            raise ValueError("恢复上下文的首条消息必须是系统消息")
+        if restored[1].role is not MessageRole.USER:
+            raise ValueError("恢复上下文的第二条消息必须是用户消息")
+        context = cls(
+            restored[0].content or "",
+            restored[1].content or "",
+            max_observation_characters=max_observation_characters,
+            max_context_characters=max_context_characters,
+            max_summary_characters=max_summary_characters,
+        )
+        context._messages = list(restored)
+        return context
+
     @property
     def messages(self) -> tuple[Message, ...]:
         """压缩超预算的较早轮次，并返回不可变消息快照。"""
@@ -83,6 +111,15 @@ class Context:
         if message.role is not MessageRole.ASSISTANT:
             raise ValueError("只能通过 append_assistant 追加助手消息")
         self._messages.append(message)
+
+    def append_user(self, content: str) -> Message:
+        """追加下一轮用户输入，使同一上下文可以持续协作。"""
+
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("用户消息不能为空")
+        message = Message(role=MessageRole.USER, content=content.strip())
+        self._messages.append(message)
+        return message
 
     def append_tool_result(self, call: ToolCall, result: ToolResult) -> Message:
         """追加与工具调用 id 成对的、长度受限的 JSON 观察。"""
@@ -211,7 +248,11 @@ def _history_groups(messages: Sequence[Message]) -> list[list[Message]]:
     groups: list[list[Message]] = []
     current: list[Message] = []
     for message in messages:
-        if message.role is MessageRole.ASSISTANT and current:
+        starts_new_group = message.role is MessageRole.USER or (
+            message.role is MessageRole.ASSISTANT
+            and any(item.role is MessageRole.ASSISTANT for item in current)
+        )
+        if starts_new_group and current:
             groups.append(current)
             current = []
         current.append(message)
@@ -244,7 +285,9 @@ def _summarize_group(group: Sequence[Message]) -> list[str]:
     }
     facts: list[str] = []
     for message in group:
-        if message.role is MessageRole.TOOL:
+        if message.role is MessageRole.USER and message.content:
+            facts.append("用户后续要求：" + _short_text(message.content))
+        elif message.role is MessageRole.TOOL:
             facts.append(_tool_fact(calls.get(message.tool_call_id or ""), message))
         elif (
             message.role is MessageRole.ASSISTANT

@@ -94,13 +94,21 @@ class Agent:
         self.last_evidence: EvidenceLedger | None = None
         self._reported_compacted_turns = 0
 
-    def run(self, task: str) -> AgentResult:
-        context = Context(
-            self._system_prompt,
-            task,
-            max_observation_characters=self._settings.max_observation_characters,
-            max_context_characters=self._settings.max_context_characters,
-        )
+    def run(self, task: str, *, context: Context | None = None) -> AgentResult:
+        """执行一轮任务；传入上下文时把任务作为新的用户消息继续对话。"""
+
+        task = task.strip()
+        if not task:
+            raise ValueError("任务不能为空")
+        if context is None:
+            context = Context(
+                self._system_prompt,
+                task,
+                max_observation_characters=self._settings.max_observation_characters,
+                max_context_characters=self._settings.max_context_characters,
+            )
+        else:
+            context.append_user(task)
         baseline_snapshot = (
             self._workspace.snapshot() if self._workspace is not None else None
         )
