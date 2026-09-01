@@ -119,6 +119,56 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
             onCountChanged: positionViewAtEnd()
+            footer: Item {
+                width: conversationList.width
+                height: backend.isBusy ? 54 : 0
+                visible: backend.isBusy
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 154
+                    height: 38
+                    radius: 12
+                    color: page.paperRaised
+                    border.color: Qt.alpha(page.brand, 0.22)
+                    Row {
+                        anchors.centerIn: parent
+                        spacing: 9
+                        Image {
+                            width: 21
+                            height: 21
+                            source: "assets/logo-mark.svg"
+                            fillMode: Image.PreserveAspectFit
+                        }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Sparrow 正在思考"
+                            color: page.textSecondary
+                            font.pixelSize: 11
+                        }
+                        Row {
+                            anchors.verticalCenter: parent.verticalCenter
+                            spacing: 3
+                            Repeater {
+                                model: 3
+                                Rectangle {
+                                    required property int index
+                                    width: 4; height: 4; radius: 2
+                                    color: page.brand
+                                    SequentialAnimation on opacity {
+                                        loops: Animation.Infinite
+                                        PauseAnimation { duration: index * 140 }
+                                        NumberAnimation { from: 0.25; to: 1; duration: 360 }
+                                        NumberAnimation { from: 1; to: 0.25; duration: 360 }
+                                        PauseAnimation { duration: (2 - index) * 140 }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             add: Transition {
                 ParallelAnimation {
                     NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 180 }
@@ -366,8 +416,8 @@ Item {
                 selectByMouse: true
                 background: null
                 Keys.onPressed: function(event) {
-                    if ((event.modifiers & Qt.ControlModifier)
-                            && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+                    const isReturn = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+                    if (isReturn && !(event.modifiers & Qt.ShiftModifier)) {
                         page.sendMessage()
                         event.accepted = true
                     }
@@ -416,9 +466,17 @@ Item {
             visible: backend.mode !== "history"
             Layout.alignment: Qt.AlignHCenter
             Layout.topMargin: 6
-            text: "Ctrl + Enter 发送  ·  工作区操作受安全边界保护"
+            text: "Enter 发送  ·  Shift + Enter 换行  ·  工作区操作受安全边界保护"
             color: "#8B9893"
             font.pixelSize: 9
+        }
+    }
+
+    Connections {
+        target: backend
+        function onStateChanged() {
+            if (!backend.isBusy && backend.mode !== "history")
+                Qt.callLater(function() { composer.forceActiveFocus() })
         }
     }
 }

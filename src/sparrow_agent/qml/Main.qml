@@ -216,6 +216,104 @@ ApplicationWindow {
         }
     }
 
+    Popup {
+        id: actionToast
+        objectName: "actionToast"
+        property string toastTitle: ""
+        property string toastMessage: ""
+        property string actionText: ""
+        x: root.width - width - 28
+        y: root.height - height - 28
+        width: 390
+        height: 76
+        padding: 0
+        modal: false
+        closePolicy: Popup.NoAutoClose
+        background: Rectangle {
+            radius: 13
+            color: root.inkRaised
+            border.color: "#285158"
+        }
+        contentItem: RowLayout {
+            anchors.fill: parent
+            anchors.leftMargin: 16
+            anchors.rightMargin: 12
+            spacing: 12
+            Rectangle {
+                Layout.preferredWidth: 30
+                Layout.preferredHeight: 30
+                radius: 15
+                color: "#173C39"
+                Text {
+                    anchors.centerIn: parent
+                    text: "✓"
+                    color: root.brandBright
+                    font.pixelSize: 14
+                    font.weight: Font.Bold
+                }
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+                Text {
+                    Layout.fillWidth: true
+                    text: actionToast.toastTitle
+                    color: "#F2F7F4"
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                Text {
+                    Layout.fillWidth: true
+                    text: actionToast.toastMessage
+                    color: "#9FB1AC"
+                    font.pixelSize: 10
+                    elide: Text.ElideRight
+                }
+            }
+            Button {
+                visible: actionToast.actionText.length > 0
+                text: actionToast.actionText
+                onClicked: {
+                    controller.restoreLastDeleted()
+                    actionToast.close()
+                }
+                contentItem: Text {
+                    text: parent.text
+                    color: root.brandBright
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                }
+                background: Rectangle {
+                    radius: 8
+                    color: parent.hovered ? "#173C39" : "transparent"
+                }
+            }
+        }
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 180 }
+                NumberAnimation { property: "scale"; from: 0.97; to: 1; duration: 180; easing.type: Easing.OutCubic }
+            }
+        }
+        exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 130 } }
+        Timer {
+            id: toastTimer
+            interval: 5200
+            onTriggered: actionToast.close()
+        }
+    }
+
+    Connections {
+        target: controller
+        function onToast(title, message, action) {
+            actionToast.toastTitle = title
+            actionToast.toastMessage = message
+            actionToast.actionText = action
+            actionToast.open()
+            toastTimer.restart()
+        }
+    }
+
     Dialog {
         id: diffDialog
         modal: true
@@ -695,8 +793,19 @@ ApplicationWindow {
                         width: historyList.width
                         height: 60
                         radius: 9
-                        color: historyMouse.containsMouse ? "#163034" : "transparent"
-                        border.color: "transparent"
+                        color: modelData.isCurrent ? "#15373A"
+                             : historyMouse.containsMouse ? "#112A2E" : "transparent"
+                        border.color: modelData.isCurrent ? "#285E5D" : "transparent"
+                        Behavior on color { ColorAnimation { duration: 120 } }
+                        Rectangle {
+                            visible: modelData.isCurrent
+                            anchors.left: parent.left
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 3
+                            height: 30
+                            radius: 2
+                            color: root.brandBright
+                        }
                         RowLayout {
                             z: 2
                             anchors.fill: parent
@@ -715,8 +824,9 @@ ApplicationWindow {
                                 Text {
                                     Layout.fillWidth: true
                                     text: modelData.title
-                                    color: "#E2DEE7"
+                                    color: modelData.isCurrent ? "#F5FAF7" : "#E2DEE7"
                                     font.pixelSize: 12
+                                    font.weight: modelData.isCurrent ? Font.DemiBold : Font.Normal
                                     elide: Text.ElideRight
                                 }
                                 RowLayout {
@@ -807,6 +917,14 @@ ApplicationWindow {
                     width: Math.min(parent.width - 120, 760)
                     spacing: 18
 
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: "本地工作区  ·  全程可回放  ·  证据驱动"
+                        color: root.jade
+                        font.pixelSize: 10
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: 1.2
+                    }
                     BrandMark {
                         anchors.horizontalCenter: parent.horizontalCenter
                         width: 104; height: 104
@@ -820,7 +938,7 @@ ApplicationWindow {
                     }
                     Text {
                         anchors.horizontalCenter: parent.horizontalCenter
-                        text: "它会先理解、再行动，并用真实变更和本地验证证明结果。"
+                        text: "从需求、代码修改到验证与审查，都留在同一个任务会话中。"
                         color: root.textSecondary
                         font.pixelSize: 14
                     }

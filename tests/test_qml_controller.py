@@ -421,6 +421,7 @@ def test_qml_controller_restores_thread_and_continues_after_restart(tmp_path: Pa
 
     controller.loadHistory(0)
     assert controller.mode == "run"
+    assert controller.history[0]["isCurrent"] is True
     assert [item["kind"] for item in controller.conversationMessages] == [
         "user",
         "tool",
@@ -461,6 +462,12 @@ def test_qml_controller_deletes_thread_from_sidebar_into_trash(tmp_path: Path) -
     trash = tmp_path / ".sparrow" / "trash"
     assert any(path.name.startswith("thread-") for path in trash.iterdir())
 
+    controller.restoreLastDeleted()
+
+    assert len(controller.history) == 1
+    assert controller.history[0]["title"] == "待删除任务"
+    assert not any(trash.iterdir())
+
 
 @pytest.mark.gui_smoke
 def test_qml_controller_deletes_legacy_run_into_trash(tmp_path: Path) -> None:
@@ -473,6 +480,11 @@ def test_qml_controller_deletes_legacy_run_into_trash(tmp_path: Path) -> None:
     assert not trace.exists()
     trash = tmp_path / ".sparrow" / "trash"
     assert any((directory / trace.name).is_file() for directory in trash.iterdir())
+
+    controller.restoreLastDeleted()
+
+    assert trace.is_file()
+    assert len(controller.history) == 1
 
 
 @pytest.mark.gui_smoke
@@ -638,6 +650,7 @@ def test_qml_application_loads_home_and_history_pages(tmp_path: Path) -> None:
     root.confirmHistoryDeletion(0, "修复价格边界")
     app.processEvents()
     assert root.findChild(QObject, "deleteTaskDialog").property("visible") is True
+    assert root.findChild(QObject, "actionToast") is not None
     dispose_qml_application(app, engine)
 
 

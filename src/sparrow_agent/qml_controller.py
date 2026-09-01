@@ -89,6 +89,7 @@ class DesktopController(QObject):
     contentChanged = Signal()
     historyChanged = Signal()
     alert = Signal(str, str, str)
+    toast = Signal(str, str, str)
 
     def __init__(
         self,
@@ -108,6 +109,8 @@ class DesktopController(QObject):
         self._conversation_messages: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = []
         self._history_refs: list[tuple[str, str | Path]] = []
+        self._current_thread_id = ""
+        self._last_trash_path: Path | None = None
         self._changed_files: list[str] = []
         self._verification_text = "等待验证"
         self._gate_text = "等待运行"
@@ -254,6 +257,7 @@ class DesktopController(QObject):
                 "stateKey": _thread_state(thread),
                 "stateText": f"{len(thread.turns)} 轮 · {_short_stop_reason(_thread_state(thread))}",
                 "path": thread.id,
+                "isCurrent": thread.id == self._current_thread_id,
             }
             for thread in threads
         ]
@@ -266,6 +270,7 @@ class DesktopController(QObject):
                 "stateKey": entry.stop_reason or "unknown",
                 "stateText": _short_stop_reason(entry.stop_reason),
                 "path": str(entry.trace_path),
+                "isCurrent": False,
             }
             for entry in runs
         ]
@@ -288,6 +293,7 @@ class DesktopController(QObject):
             return
 
         self._session = None
+        self._current_thread_id = ""
 
         recorded_events = run.events[:_MAX_DISPLAYED_EVENTS]
         self._events = [_present_recorded_event(event) for event in recorded_events]
@@ -335,11 +341,14 @@ class DesktopController(QObject):
         if self._thread is not None or not 0 <= index < len(self._history_refs):
             return
         kind, reference = self._history_refs[index]
+        title = str(self._history[index].get("title", "任务"))
         try:
             if kind == "thread":
-                ConversationStore(self._workspace).move_to_trash(str(reference))
+                trash_path = ConversationStore(self._workspace).move_to_trash(
+                    str(reference)
+                )
             else:
-                _move_run_to_trash(self._workspace, Path(reference))
+                trash_path = _move_run_to_trash(self._workspace, Path(reference))
         except (ConversationError, RecordingError, OSError) as exc:
             self.alert.emit("无法删除任务", str(exc), "error")
             return
@@ -355,7 +364,24 @@ class DesktopController(QObject):
         )
         if should_reset:
             self.newTask()
+        self._last_trash_path = trash_path
         self.refresh_history()
+        self.toast.emit("已移入回收目录", f"“{title}”已从任务列表移除", "撤销")
+
+    @Slot()
+    def restoreLastDeleted(self) -> None:
+        """恢复最近一次从界面删除的任务。"""
+
+        if self._thread is not None or self._last_trash_path is None:
+            return
+        try:
+            _restore_trash(self._workspace, self._last_trash_path)
+        except (RecordingError, OSError) as exc:
+            self.alert.emit("无法恢复任务", str(exc), "error")
+            return
+        self._last_trash_path = None
+        self.refresh_history()
+        self.toast.emit("任务已恢复", "会话和运行记录已返回原位置", "")
 
     def _load_conversation(self, thread_id: str) -> None:
         try:
@@ -421,6 +447,7 @@ class DesktopController(QObject):
                 )
 
         self._mode = "run"
+        self._current_thread_id = thread.id
         self._task_text = thread.title
         self._conversation_messages = messages
         self._events = events
@@ -438,6 +465,7 @@ class DesktopController(QObject):
             f"已恢复 {len(thread.turns)} 轮对话 · {self._total_tokens:,} Tokens · 可继续发送消息"
         )
         self.contentChanged.emit()
+        self.refresh_history()
 
     @Slot()
     def newTask(self) -> None:
@@ -445,6 +473,7 @@ class DesktopController(QObject):
             return
         self._mode = "home"
         self._session = None
+        self._current_thread_id = ""
         self._task_text = ""
         self._events = []
         self._conversation_messages = []
@@ -459,6 +488,7 @@ class DesktopController(QObject):
         self._phase = 0
         self._set_state("idle", "就绪")
         self.contentChanged.emit()
+        self.refresh_history()
 
     @Slot(str, str, str, int, int)
     def startTask(
@@ -496,6 +526,9 @@ class DesktopController(QObject):
             return
 
         self._session = self._session_factory(config)
+        self._current_thread_id = str(
+            getattr(getattr(self._session, "thread", None), "id", "")
+        )
         self._token_budget = token_budget
         self._begin_turn(task, reset=True)
 
@@ -572,6 +605,7 @@ class DesktopController(QObject):
             self._phase = max(self._phase, 0)
             if self._session is not None and self._session.trace_path is not None:
                 self._trace_path = str(self._session.trace_path)
+            self.refresh_history()
         elif event.event == "model_response":
             self._iterations = max(self._iterations, _plain_int(data.get("iteration")))
             usage = data.get("usage")
@@ -931,6 +965,51 @@ def _move_run_to_trash(workspace: Path, trace_path: Path) -> Path:
         if item.is_file() and not item.is_symlink():
             item.replace(destination / item.name)
     return destination
+
+
+def _restore_trash(workspace: Path, trash_path: Path) -> None:
+    """把一个界面删除的任务安全地恢复到记录目录。"""
+
+    root = workspace.resolve(strict=True)
+    raw_trash_root = root / ".sparrow" / "trash"
+    if raw_trash_root.is_symlink():
+        raise RecordingError("回收目录不能是符号链接")
+    trash_root = raw_trash_root.resolve(strict=True)
+    candidate = trash_path.resolve(strict=True)
+    if (
+        not candidate.is_relative_to(trash_root)
+        or candidate.parent != trash_root
+        or candidate.is_symlink()
+        or not candidate.is_dir()
+    ):
+        raise RecordingError("回收记录路径无效")
+
+    items = list(candidate.iterdir())
+    if not items or any(item.is_symlink() or not item.is_file() for item in items):
+        raise RecordingError("回收记录内容无效")
+    allowed_suffixes = {".json", ".jsonl", ".log"}
+    if any(item.suffix not in allowed_suffixes for item in items):
+        raise RecordingError("回收记录包含未知文件")
+
+    thread_directory = root / ".sparrow" / "threads"
+    run_directory = root / ".sparrow" / "runs"
+    if thread_directory.is_symlink() or run_directory.is_symlink():
+        raise RecordingError("记录目录不能是符号链接")
+    destinations = [
+        (thread_directory if item.suffix == ".json" else run_directory) / item.name
+        for item in items
+    ]
+    if any(
+        destination.exists() or destination.is_symlink()
+        for destination in destinations
+    ):
+        raise RecordingError("原位置已存在同名记录，无法自动恢复")
+
+    thread_directory.mkdir(parents=True, exist_ok=True)
+    run_directory.mkdir(parents=True, exist_ok=True)
+    for item, destination in zip(items, destinations, strict=True):
+        item.replace(destination)
+    candidate.rmdir()
 
 
 def _one_line(value: Any) -> str:
