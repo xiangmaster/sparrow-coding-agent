@@ -348,6 +348,27 @@ def test_qml_controller_reports_worker_failure(tmp_path: Path) -> None:
 
 
 @pytest.mark.gui_smoke
+def test_qml_controller_refreshes_persisted_failure_state(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DEEPSEEK_API_KEY=replace-me\n",
+        encoding="utf-8",
+    )
+    app, engine, controller = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
+
+    controller.startTask("触发配置错误", "deepseek-v4-pro", "high", 4, 400_000)
+    deadline = time.monotonic() + 2
+    while controller.isBusy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.005)
+
+    assert controller.history[0]["stateKey"] == "failed"
+    assert controller.history[0]["stateText"] == "1 轮 · 已失败"
+    dispose_qml_application(app, engine)
+
+
+@pytest.mark.gui_smoke
 def test_qml_controller_continues_the_same_conversation_session(tmp_path: Path) -> None:
     (tmp_path / ".env").write_text("DEEPSEEK_API_KEY=fake\n", encoding="utf-8")
     app, engine, _ = build_qml_application(
@@ -602,6 +623,7 @@ def test_qml_diff_lines_expose_line_numbers_and_visual_kinds() -> None:
     ("tool_name", "action", "label"),
     [
         ("list_files", "inspect", "检查"),
+        ("search_files", "inspect", "检查"),
         ("read_file", "read", "读取"),
         ("apply_patch", "edit", "修改"),
         ("run_command", "command", "命令"),
@@ -613,6 +635,42 @@ def test_tool_visual_distinguishes_action_types(tool_name, action, label) -> Non
 
     assert visual["action"] == action
     assert visual["actionLabel"] == label
+
+
+@pytest.mark.gui_smoke
+def test_search_files_is_presented_as_an_inspection_action(tmp_path: Path) -> None:
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
+    controller._on_event(
+        SessionEvent(
+            sequence=1,
+            event="tool_result",
+            data={"tool_name": "search_files", "ok": True, "output": "app.py:1"},
+        )
+    )
+
+    assert controller.phase == 1
+    assert controller.events[-1]["title"] == "搜索代码"
+    assert controller.conversationMessages[-1]["action"] == "inspect"
+
+
+@pytest.mark.gui_smoke
+def test_qml_defaults_follow_sparrow_environment(tmp_path: Path) -> None:
+    (tmp_path / ".env").write_text(
+        "DEEPSEEK_API_KEY=fake\n"
+        "SPARROW_MODEL=deepseek-v4-pro\n"
+        "SPARROW_REASONING_EFFORT=max\n",
+        encoding="utf-8",
+    )
+    app, engine, controller = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
+    root = engine.rootObjects()[0]
+
+    assert controller.configuredModel == "deepseek-v4-pro"
+    assert controller.configuredReasoningEffort == "max"
+    assert root.findChild(QObject, "modelInput").property("currentText") == "deepseek-v4-pro"
+    assert root.findChild(QObject, "reasoningInput").property("currentText") == "max"
+    dispose_qml_application(app, engine)
 
 
 def test_session_worker_emits_failure_without_raising() -> None:
@@ -651,6 +709,30 @@ def test_qml_application_loads_home_and_history_pages(tmp_path: Path) -> None:
     app.processEvents()
     assert root.findChild(QObject, "deleteTaskDialog").property("visible") is True
     assert root.findChild(QObject, "actionToast") is not None
+    dispose_qml_application(app, engine)
+
+
+@pytest.mark.gui_smoke
+def test_qml_window_waits_for_busy_worker_before_closing(tmp_path: Path) -> None:
+    app, engine, controller = build_qml_application(
+        [], workspace=tmp_path, config_directory=tmp_path
+    )
+    root = engine.rootObjects()[0]
+    root.show()
+    app.processEvents()
+
+    controller._thread = object()
+    root.close()
+    app.processEvents()
+
+    assert root.property("visible") is True
+    assert root.property("pendingSafeClose") is True
+
+    controller._thread = None
+    controller.stateChanged.emit()
+    app.processEvents()
+
+    assert root.property("visible") is False
     dispose_qml_application(app, engine)
 
 

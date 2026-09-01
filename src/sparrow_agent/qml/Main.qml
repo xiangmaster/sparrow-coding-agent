@@ -33,6 +33,17 @@ ApplicationWindow {
     property int selectedPreview: 0
     property int pendingDeleteIndex: -1
     property string pendingDeleteTitle: ""
+    property bool pendingSafeClose: false
+
+    onClosing: function(close) {
+        if (controller.isBusy) {
+            close.accepted = false
+            if (!root.pendingSafeClose) {
+                root.pendingSafeClose = true
+                controller.cancelTask()
+            }
+        }
+    }
 
     function showDiff(index) {
         selectedPreview = index
@@ -515,10 +526,15 @@ ApplicationWindow {
                 SmallLabel { text: "MODEL  /  模型" }
                 ComboBox {
                     id: modelInput
+                    objectName: "modelInput"
                     Layout.fillWidth: true
                     implicitHeight: 40
                     editable: true
-                    model: ["deepseek-v4-flash", "deepseek-v4-pro"]
+                    model: controller.configuredModel === "deepseek-v4-pro"
+                           ? ["deepseek-v4-pro", "deepseek-v4-flash"]
+                           : controller.configuredModel === "deepseek-v4-flash"
+                             ? ["deepseek-v4-flash", "deepseek-v4-pro"]
+                             : [controller.configuredModel, "deepseek-v4-pro", "deepseek-v4-flash"]
                     currentIndex: 0
                     background: Rectangle {
                         radius: 9
@@ -530,9 +546,14 @@ ApplicationWindow {
                 SmallLabel { text: "REASONING  /  推理强度" }
                 ComboBox {
                     id: reasoningInput
+                    objectName: "reasoningInput"
                     Layout.fillWidth: true
                     implicitHeight: 40
-                    model: ["low", "high", "max"]
+                    model: controller.configuredReasoningEffort === "low"
+                           ? ["low", "high", "max"]
+                           : controller.configuredReasoningEffort === "max"
+                             ? ["max", "high", "low"]
+                             : ["high", "low", "max"]
                     currentIndex: 0
                     background: Rectangle { radius: 9; color: "#F1F5F2"; border.color: parent.activeFocus ? root.brand : root.line }
                 }
@@ -558,7 +579,7 @@ ApplicationWindow {
                     ColumnLayout {
                         Layout.fillWidth: true
                         spacing: 6
-                        SmallLabel { text: "Token 预算（千）" }
+                        SmallLabel { text: "任务累计 Token 预算（千）" }
                         SpinBox {
                             id: tokenBudgetInput
                             objectName: "tokenBudgetInput"
@@ -616,6 +637,12 @@ ApplicationWindow {
             alertDialog.message = message
             alertDialog.kind = kind
             alertDialog.open()
+        }
+        function onStateChanged() {
+            if (root.pendingSafeClose && !controller.isBusy) {
+                root.pendingSafeClose = false
+                root.close()
+            }
         }
     }
 

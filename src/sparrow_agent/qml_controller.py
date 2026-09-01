@@ -11,6 +11,7 @@ from typing import Any, Protocol
 
 from PySide6.QtCore import QObject, Property, QThread, QUrl, Signal, Slot
 
+from sparrow_agent.config import ConfigError, read_environment_file
 from sparrow_agent.conversation import (
     ConversationConfig,
     ConversationError,
@@ -27,7 +28,7 @@ _MAX_DISPLAYED_EVENTS = 500
 _TOOL_LABELS = {
     "list_files": "检查文件结构",
     "read_file": "阅读文件",
-    "search_text": "搜索代码",
+    "search_files": "搜索代码",
     "create_directory": "创建目录",
     "replace_text": "精确修改",
     "apply_patch": "应用代码补丁",
@@ -101,6 +102,10 @@ class DesktopController(QObject):
         super().__init__()
         self._workspace = Path(workspace or Path.cwd()).resolve()
         self._config_directory = Path(config_directory or Path.cwd()).resolve()
+        (
+            self._configured_model,
+            self._configured_reasoning_effort,
+        ) = _configured_defaults(self._config_directory)
         self._state_key = "idle"
         self._state_text = "就绪"
         self._mode = "home"
@@ -138,6 +143,14 @@ class DesktopController(QObject):
     @Property(bool, notify=workspaceChanged)
     def hasApiConfig(self) -> bool:
         return (self._config_directory / ".env").is_file()
+
+    @Property(str, constant=True)
+    def configuredModel(self) -> str:
+        return self._configured_model
+
+    @Property(str, constant=True)
+    def configuredReasoningEffort(self) -> str:
+        return self._configured_reasoning_effort
 
     @Property(str, notify=stateChanged)
     def stateKey(self) -> str:
@@ -448,6 +461,8 @@ class DesktopController(QObject):
 
         self._mode = "run"
         self._current_thread_id = thread.id
+        if thread.max_total_tokens is not None:
+            self._token_budget = thread.max_total_tokens
         self._task_text = thread.title
         self._conversation_messages = messages
         self._events = events
@@ -678,6 +693,7 @@ class DesktopController(QObject):
             {"kind": "assistant", "title": "Sparrow", "text": message, "tone": "error"}
         )
         self.contentChanged.emit()
+        self.refresh_history()
         self.alert.emit("Sparrow 运行失败", message, "error")
 
     @Slot()
@@ -688,7 +704,7 @@ class DesktopController(QObject):
 
     def _consume_tool_result(self, data: Mapping[str, Any]) -> None:
         tool_name = data.get("tool_name")
-        if tool_name in {"list_files", "read_file", "search_text"}:
+        if tool_name in {"list_files", "read_file", "search_files"}:
             self._phase = max(self._phase, 1)
         elif tool_name in _MUTATION_TOOLS:
             self._phase = max(self._phase, 2)
@@ -813,7 +829,7 @@ def _tool_detail(data: Mapping[str, Any]) -> str:
 
 
 def _tool_visual(tool_name: str) -> dict[str, str]:
-    if tool_name in {"list_files", "search_text"}:
+    if tool_name in {"list_files", "search_files"}:
         return {"action": "inspect", "icon": "⌕", "actionLabel": "检查"}
     if tool_name == "read_file":
         return {"action": "read", "icon": "≡", "actionLabel": "读取"}
@@ -908,7 +924,7 @@ def _phase_from_events(events: tuple[RecordedEvent, ...]) -> int:
         if event.event != "tool_result":
             continue
         tool_name = event.data.get("tool_name")
-        if tool_name in {"list_files", "read_file", "search_text"}:
+        if tool_name in {"list_files", "read_file", "search_files"}:
             phase = max(phase, 1)
         elif tool_name in _MUTATION_TOOLS:
             phase = max(phase, 2)
@@ -926,6 +942,9 @@ def _stop_reason_text(stop_reason: str | None) -> str:
         "provider_error": "模型请求失败",
         "budget_exceeded": "超出预算",
         "error": "运行失败",
+        "failed": "运行失败",
+        "running": "正在运行",
+        "idle": "等待开始",
     }.get(stop_reason, "状态未知")
 
 
@@ -937,6 +956,9 @@ def _short_stop_reason(stop_reason: str | None) -> str:
         "repeated_action": "重复终止",
         "provider_error": "请求失败",
         "budget_exceeded": "超出预算",
+        "failed": "已失败",
+        "running": "运行中",
+        "idle": "未开始",
     }.get(stop_reason, "未结束")
 
 
@@ -1022,3 +1044,19 @@ def _one_line(value: Any) -> str:
 
 def _plain_int(value: Any) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _configured_defaults(config_directory: Path) -> tuple[str, str]:
+    """只读取界面需要的非敏感默认值，不向 QML 暴露密钥。"""
+
+    try:
+        values = read_environment_file(config_directory / ".env")
+    except ConfigError:
+        return "deepseek-v4-pro", "high"
+    model = values.get("SPARROW_MODEL", "deepseek-v4-pro").strip()
+    if not model:
+        model = "deepseek-v4-pro"
+    reasoning = values.get("SPARROW_REASONING_EFFORT", "high").strip()
+    if reasoning not in {"low", "high", "max"}:
+        reasoning = "high"
+    return model, reasoning

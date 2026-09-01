@@ -95,6 +95,11 @@ class ConversationThread:
     workspace: str
     created_at: str
     updated_at: str
+    model: str | None = None
+    reasoning_effort: str | None = None
+    max_iterations: int | None = None
+    max_total_tokens: int | None = None
+    max_context_characters: int | None = None
     turns: tuple[ConversationTurn, ...] = ()
     context_messages: tuple[Message, ...] = ()
 
@@ -264,9 +269,42 @@ class ConversationSession:
                 workspace=str(self._workspace.root),
                 created_at=now,
                 updated_at=now,
+                model=config.model,
+                reasoning_effort=config.reasoning_effort,
+                max_iterations=config.max_iterations,
+                max_total_tokens=config.max_total_tokens,
+                max_context_characters=config.max_context_characters,
             )
         else:
             self.thread = self._store.load(thread_id)
+            self.config = replace(
+                config,
+                model=(
+                    self.thread.model
+                    if self.thread.model is not None
+                    else config.model
+                ),
+                reasoning_effort=(
+                    self.thread.reasoning_effort
+                    if self.thread.reasoning_effort is not None
+                    else config.reasoning_effort
+                ),
+                max_iterations=(
+                    self.thread.max_iterations
+                    if self.thread.max_iterations is not None
+                    else config.max_iterations
+                ),
+                max_total_tokens=(
+                    self.thread.max_total_tokens
+                    if self.thread.max_total_tokens is not None
+                    else config.max_total_tokens
+                ),
+                max_context_characters=(
+                    self.thread.max_context_characters
+                    if self.thread.max_context_characters is not None
+                    else config.max_context_characters
+                ),
+            )
             if self.thread.context_messages:
                 self._context = Context.from_messages(
                     self.thread.context_messages,
@@ -343,10 +381,51 @@ class ConversationSession:
                 disk_recorder = RunRecorder(self._workspace.root, run_id=turn_id)
                 self.trace_path = disk_recorder.jsonl_path
                 recorder = FanoutRecorder((turn_recorder, disk_recorder))
+            consumed_tokens = sum(
+                item.total_tokens
+                for item in self.thread.turns
+                if item.id != turn_id
+            )
+            remaining_tokens = self.config.max_total_tokens - consumed_tokens
+            if remaining_tokens <= 0:
+                result = AgentResult(
+                    stop_reason=StopReason.BUDGET_EXCEEDED,
+                    final_text=(
+                        f"任务累计 Token 用量 {consumed_tokens} 已达到预算 "
+                        f"{self.config.max_total_tokens}"
+                    ),
+                    iterations=0,
+                )
+                recorder.record(
+                    "run_started",
+                    {
+                        "task": user_message,
+                        "max_iterations": self.config.max_iterations,
+                        "max_total_tokens": self.config.max_total_tokens,
+                        "remaining_total_tokens": 0,
+                        "max_context_characters": self.config.max_context_characters,
+                        "snapshot_files": None,
+                    },
+                )
+                recorder.record(
+                    "run_finished",
+                    {
+                        "stop_reason": result.stop_reason.value,
+                        "final_text": result.final_text,
+                        "iterations": 0,
+                        "completion_request": None,
+                    },
+                )
+                self._finish_turn(turn_id, result)
+                return result
+            settings = replace(
+                self.config.agent_settings(),
+                max_total_tokens=remaining_tokens,
+            )
             agent = Agent(
                 self._provider_instance(),
                 build_tool_registry(self._workspace),
-                settings=self.config.agent_settings(),
+                settings=settings,
                 recorder=recorder,
                 workspace=self._workspace,
                 is_cancelled=self._cancel_event.is_set,
@@ -470,6 +549,13 @@ def _thread_to_dict(thread: ConversationThread) -> dict[str, Any]:
         "workspace": thread.workspace,
         "created_at": thread.created_at,
         "updated_at": thread.updated_at,
+        "settings": {
+            "model": thread.model,
+            "reasoning_effort": thread.reasoning_effort,
+            "max_iterations": thread.max_iterations,
+            "max_total_tokens": thread.max_total_tokens,
+            "max_context_characters": thread.max_context_characters,
+        },
         "turns": [
             {
                 "id": turn.id,
@@ -503,12 +589,26 @@ def _parse_thread(
         messages = tuple(
             _parse_message(item) for item in _sequence(value.get("context_messages"))
         )
+        settings = value.get("settings", {})
+        if not isinstance(settings, Mapping):
+            raise ValueError("settings 必须是对象")
         return ConversationThread(
             id=expected_id,
             title=_required_text(value.get("title"), "title"),
             workspace=str(workspace),
             created_at=_required_text(value.get("created_at"), "created_at"),
             updated_at=_required_text(value.get("updated_at"), "updated_at"),
+            model=_optional_text(settings.get("model")),
+            reasoning_effort=_optional_text(settings.get("reasoning_effort")),
+            max_iterations=_optional_positive_int(
+                settings.get("max_iterations"), "max_iterations"
+            ),
+            max_total_tokens=_optional_positive_int(
+                settings.get("max_total_tokens"), "max_total_tokens"
+            ),
+            max_context_characters=_optional_positive_int(
+                settings.get("max_context_characters"), "max_context_characters"
+            ),
             turns=turns,
             context_messages=messages,
         )
@@ -586,6 +686,14 @@ def _optional_text(value: Any) -> str | None:
 def _plain_nonnegative_int(value: Any, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise ValueError(f"{name} 必须是非负整数")
+    return value
+
+
+def _optional_positive_int(value: Any, name: str) -> int | None:
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{name} 必须是正整数")
     return value
 
 

@@ -113,6 +113,89 @@ def test_conversation_can_resume_persisted_context(tmp_path: Path) -> None:
     assert loaded.turns[-1].assistant_text == "第二轮完成"
 
 
+def test_conversation_restores_persisted_run_settings(tmp_path: Path) -> None:
+    _write_env(tmp_path)
+    original = ConversationSession(
+        ConversationConfig(
+            workspace=tmp_path,
+            config_directory=tmp_path,
+            model="deepseek-v4-flash",
+            reasoning_effort="low",
+            max_iterations=7,
+            max_total_tokens=123_000,
+            max_context_characters=9_000,
+            record=False,
+        ),
+        provider_factory=lambda settings: ScriptedProvider(
+            [_completion("done", "完成")]
+        ),
+    )
+    original.run_turn("保存配置")
+
+    resumed = ConversationSession(
+        ConversationConfig(
+            workspace=tmp_path,
+            config_directory=tmp_path,
+            model="deepseek-v4-pro",
+            reasoning_effort="max",
+            max_iterations=20,
+            max_total_tokens=400_000,
+            max_context_characters=120_000,
+            record=False,
+        ),
+        thread_id=original.thread.id,
+        provider_factory=lambda settings: ScriptedProvider([]),
+    )
+
+    assert resumed.config.model == "deepseek-v4-flash"
+    assert resumed.config.reasoning_effort == "low"
+    assert resumed.config.max_iterations == 7
+    assert resumed.config.max_total_tokens == 123_000
+    assert resumed.config.max_context_characters == 9_000
+
+
+def test_conversation_store_loads_legacy_thread_without_settings(tmp_path: Path) -> None:
+    _write_env(tmp_path)
+    session = ConversationSession(
+        ConversationConfig(workspace=tmp_path, config_directory=tmp_path, record=False),
+        provider_factory=lambda settings: ScriptedProvider(
+            [_completion("done", "完成")]
+        ),
+    )
+    session.run_turn("旧会话")
+    path = tmp_path / ".sparrow" / "threads" / f"{session.thread.id}.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.pop("settings")
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    loaded = ConversationStore(tmp_path).load(session.thread.id)
+
+    assert loaded.model is None
+    assert loaded.max_total_tokens is None
+
+
+def test_conversation_token_budget_is_cumulative_across_turns(tmp_path: Path) -> None:
+    _write_env(tmp_path)
+    provider = ScriptedProvider([_completion("done", "第一轮", tokens=11)])
+    session = ConversationSession(
+        ConversationConfig(
+            workspace=tmp_path,
+            config_directory=tmp_path,
+            max_total_tokens=11,
+            record=False,
+        ),
+        provider_factory=lambda settings: provider,
+    )
+
+    first = session.run_turn("第一轮")
+    second = session.run_turn("继续执行")
+
+    assert first.stop_reason is StopReason.COMPLETED
+    assert second.stop_reason is StopReason.BUDGET_EXCEEDED
+    assert len(provider.requests) == 1
+    assert [turn.total_tokens for turn in session.thread.turns] == [11, 0]
+
+
 def test_conversation_persists_trace_reference_per_turn(tmp_path: Path) -> None:
     _write_env(tmp_path)
     session = ConversationSession(
@@ -133,6 +216,7 @@ def test_conversation_persists_trace_reference_per_turn(tmp_path: Path) -> None:
         )
     )
     assert saved["schema_version"] == 1
+    assert saved["settings"]["max_total_tokens"] == 400_000
     assert saved["turns"][0]["trace_path"] == turn.trace_path
 
 
