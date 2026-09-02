@@ -25,7 +25,6 @@ gui = [
 [project.scripts]
 sparrow = "sparrow_agent.cli:main"
 sparrow-gui = "sparrow_agent.gui:main"
-sparrow-gui-legacy = "sparrow_agent.desktop:run_desktop"
 
 [tool.pytest.ini_options]
 addopts = "-q"
@@ -33,11 +32,6 @@ testpaths = ["tests"]
 markers = [
   "api_smoke: 访问真实 DeepSeek API、默认跳过且可能产生少量费用",
   "gui_smoke: 需要 PySide6 和可用 Qt 平台插件的桌面界面冒烟测试",
-]
-
-[tool.coverage.run]
-omit = [
-  "src/sparrow_agent/desktop.py",
 ]
 
 [tool.hatch.build.targets.wheel]

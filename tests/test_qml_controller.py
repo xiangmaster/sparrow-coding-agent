@@ -28,6 +28,7 @@ from sparrow_agent.conversation import (  # noqa: E402
     ConversationStore,
     ConversationThread,
     ConversationTurn,
+    SessionEvent,
     TurnStatus,
 )
 from sparrow_agent.provider import ModelResponse, ScriptedProvider  # noqa: E402
@@ -43,7 +44,6 @@ from sparrow_agent.qml_controller import (  # noqa: E402
     _tool_visual,
 )
 from sparrow_agent.recording import RunRecorder  # noqa: E402
-from sparrow_agent.session import SessionEvent  # noqa: E402
 
 
 def _completion_model_response(call_id: str, summary: str) -> ModelResponse:

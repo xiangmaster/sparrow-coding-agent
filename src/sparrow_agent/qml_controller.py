@@ -18,11 +18,11 @@ from sparrow_agent.conversation import (
     ConversationSession,
     ConversationStore,
     ConversationThread,
+    SessionEvent,
 )
 from sparrow_agent.history import ChangePreview, discover_history, load_history_run
 from sparrow_agent.models import AgentResult, StopReason
 from sparrow_agent.recording import RecordedEvent, RecordingError
-from sparrow_agent.session import SessionEvent
 
 _MAX_DISPLAYED_EVENTS = 500
 _TOOL_LABELS = {

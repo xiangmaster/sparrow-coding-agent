@@ -20,12 +20,20 @@ from sparrow_agent.models import AgentResult, Message, MessageRole, StopReason, 
 from sparrow_agent.provider import DeepSeekProvider, DeepSeekSettings, ModelProvider
 from sparrow_agent.recording import EventRecorder, RunRecorder
 from sparrow_agent.runtime import FanoutRecorder, build_tool_registry, load_provider_settings
-from sparrow_agent.session import SessionEvent
 from sparrow_agent.workspace import Workspace
 
 THREAD_SCHEMA_VERSION = 1
 _ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _MAX_THREAD_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEvent:
+    """供界面按顺序消费的一条结构化会话事件。"""
+
+    sequence: int
+    event: str
+    data: Mapping[str, Any]
 
 
 class ConversationError(RuntimeError):

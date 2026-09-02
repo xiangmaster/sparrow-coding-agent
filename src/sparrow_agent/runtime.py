@@ -42,7 +42,7 @@ def load_provider_settings(
 
 
 def build_tool_registry(workspace: Workspace) -> ToolRegistry:
-    """按稳定顺序注册 CLI 与 GUI 共用的十个本地工具。"""
+    """按稳定顺序注册 CLI 与 GUI 共用的十个工作区工具。"""
 
     return ToolRegistry(
         [
