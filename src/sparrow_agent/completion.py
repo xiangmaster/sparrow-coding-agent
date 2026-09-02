@@ -45,7 +45,13 @@ class CompletionGate:
         parameters={
             "type": "object",
             "properties": {
-                "summary": {"type": "string", "description": "完成内容摘要"},
+                "summary": {
+                    "type": "string",
+                    "description": (
+                        "面向用户的中文最终答复：说明完成内容、关键原因或设计决策、"
+                        "验证结论与剩余风险；不能只写完成状态"
+                    ),
+                },
                 "changed_files": {
                     "type": "array",
                     "items": {"type": "string"},

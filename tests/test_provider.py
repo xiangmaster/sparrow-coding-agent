@@ -75,6 +75,28 @@ def _api_tool_call(call_id: str, name: str, arguments: str) -> Any:
     )
 
 
+def _stream_chunk(
+    *,
+    content: str | None = None,
+    reasoning_content: str | None = None,
+    tool_calls: list[Any] | None = None,
+    finish_reason: str | None = None,
+    usage: Any = None,
+) -> Any:
+    delta = SimpleNamespace(
+        content=content,
+        reasoning_content=reasoning_content,
+        tool_calls=tool_calls,
+    )
+    choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+    return SimpleNamespace(
+        choices=[choice],
+        usage=usage,
+        model="deepseek-v4-flash",
+        id="stream-1",
+    )
+
+
 def test_settings_load_from_environment_without_exposing_api_key() -> None:
     settings = DeepSeekSettings.from_environment(
         {
@@ -196,6 +218,57 @@ def test_provider_parses_response_tool_calls_usage_and_reasoning() -> None:
     assert response.usage.total_tokens == 155
     assert response.model == "deepseek-v4-pro"
     assert response.response_id == "response-1"
+
+
+def test_provider_streams_visible_text_and_reassembles_tool_call() -> None:
+    first_call = SimpleNamespace(
+        index=0,
+        id="call-stream",
+        function=SimpleNamespace(
+            name="request_completion",
+            arguments='{"summary":"完成",',
+        ),
+    )
+    second_call = SimpleNamespace(
+        index=0,
+        id=None,
+        function=SimpleNamespace(
+            name=None,
+            arguments=(
+                '"changed_files":[],"verification_commands":[],'
+                '"remaining_risks":[]}'
+            ),
+        ),
+    )
+    usage = SimpleNamespace(
+        prompt_tokens=10,
+        completion_tokens=6,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=2),
+    )
+    chunks = [
+        _stream_chunk(content="我先说明", reasoning_content="分析", tool_calls=[first_call]),
+        _stream_chunk(content="完成结果。", tool_calls=[second_call], finish_reason="tool_calls"),
+        SimpleNamespace(
+            choices=[], usage=usage, model="deepseek-v4-flash", id="stream-1"
+        ),
+    ]
+    client = _FakeClient(chunks)
+    deltas: list[str] = []
+
+    response = DeepSeekProvider(_settings(), client=client).complete_stream(
+        [Message(role=MessageRole.USER, content="完成任务")],
+        on_text_delta=deltas.append,
+    )
+
+    assert deltas == ["我先说明", "完成结果。"]
+    assert response.message.content == "我先说明完成结果。"
+    assert response.message.reasoning_content == "分析"
+    assert response.message.tool_calls[0].name == "request_completion"
+    assert response.message.tool_calls[0].arguments["summary"] == "完成"
+    assert response.usage.total_tokens == 16
+    request = client.completions.requests[0]
+    assert request["stream"] is True
+    assert request["stream_options"] == {"include_usage": True}
 
 
 @pytest.mark.parametrize(

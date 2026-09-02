@@ -43,7 +43,7 @@ AgentSession（纯 Python）
 Shared Runtime
   |- 加载 Sparrow 启动目录 .env，与目标工作区隔离
   |- 构造 Provider 与 AgentSettings
-  |- 注册九个本地工具
+  |- 注册十个本地工具
   `- 组合 GUI、控制台和磁盘记录器
           |
           v
@@ -52,6 +52,10 @@ Shared Runtime
 
 Qt 层不得直接调用具体工具、修改证据账本或拼装 Provider 请求。会话层也不得导入
 PySide6，确保它能在无图形环境中运行单元测试，并为未来其他入口保留复用能力。
+
+模型可见文本由 Provider 的真实 SSE 增量转成 `model_delta` 会话事件，Qt 只负责把增量
+合并进当前回复卡片；最终 `model_response` 仍保存完整文本，流式展示不改变 Agent 的
+上下文、工具调用和完成证据语义。
 
 ## 4. 主界面
 

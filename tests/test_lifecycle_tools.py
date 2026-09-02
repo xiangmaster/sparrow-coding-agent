@@ -9,6 +9,7 @@ from sparrow_agent.models import ToolCall
 from sparrow_agent.tools import (
     ApplyPatchTool,
     CreateDirectoryTool,
+    CreateFileTool,
     DeleteFileTool,
     RenameFileTool,
     ToolRegistry,
@@ -21,6 +22,7 @@ def _registry(tmp_path: Path) -> ToolRegistry:
     return ToolRegistry(
         [
             CreateDirectoryTool(workspace),
+            CreateFileTool(workspace),
             ApplyPatchTool(workspace),
             RenameFileTool(workspace),
             DeleteFileTool(workspace),
@@ -47,6 +49,54 @@ def test_create_directory_prepares_nested_parent_for_new_file(tmp_path: Path) ->
     assert created.metadata["created_directories"] == ("src/pkg",)
     assert written.ok is True
     assert (tmp_path / "src" / "pkg" / "__init__.py").read_text() == "VALUE = 1\n"
+
+
+def test_create_file_writes_complete_utf8_content_and_reports_change(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "src").mkdir()
+    registry = _registry(tmp_path)
+
+    result = registry.execute(
+        ToolCall(
+            id="create",
+            name="create_file",
+            arguments={
+                "path": "src/availability.py",
+                "content": '"""可用时段。"""\n\nVALUE = 1\n',
+            },
+        )
+    )
+
+    target = tmp_path / "src" / "availability.py"
+    assert result.ok is True
+    assert target.read_text(encoding="utf-8") == '"""可用时段。"""\n\nVALUE = 1\n'
+    assert target.stat().st_mode & 0o777 == 0o644
+    assert result.metadata["changed_files"] == ("src/availability.py",)
+    assert result.metadata["result_bytes"] == len(target.read_bytes())
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        ({"path": "existing.txt", "content": "replace"}, "已经存在"),
+        ({"path": "missing/new.txt", "content": "new"}, "父目录不存在"),
+        ({"path": ".env", "content": "SECRET=value"}, "禁止访问"),
+        ({"path": "new.txt", "content": 1}, "必须是字符串"),
+    ],
+)
+def test_create_file_rejects_overwrite_invalid_parent_sensitive_and_non_text(
+    tmp_path: Path, arguments: dict, message: str
+) -> None:
+    (tmp_path / "existing.txt").write_text("keep\n", encoding="utf-8")
+
+    result = _registry(tmp_path).execute(
+        ToolCall(id="create", name="create_file", arguments=arguments)
+    )
+
+    assert result.ok is False
+    assert message in result.error
+    assert (tmp_path / "existing.txt").read_text(encoding="utf-8") == "keep\n"
 
 
 @pytest.mark.parametrize(

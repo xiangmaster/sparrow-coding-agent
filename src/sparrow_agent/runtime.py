@@ -12,6 +12,7 @@ from sparrow_agent.recording import EventRecorder
 from sparrow_agent.tools import (
     ApplyPatchTool,
     CreateDirectoryTool,
+    CreateFileTool,
     DeleteFileTool,
     ListFilesTool,
     ReadFileTool,
@@ -41,7 +42,7 @@ def load_provider_settings(
 
 
 def build_tool_registry(workspace: Workspace) -> ToolRegistry:
-    """按稳定顺序注册 CLI 与 GUI 共用的九个本地工具。"""
+    """按稳定顺序注册 CLI 与 GUI 共用的十个本地工具。"""
 
     return ToolRegistry(
         [
@@ -49,6 +50,7 @@ def build_tool_registry(workspace: Workspace) -> ToolRegistry:
             ReadFileTool(workspace),
             SearchFilesTool(workspace),
             CreateDirectoryTool(workspace),
+            CreateFileTool(workspace),
             ReplaceTextTool(workspace),
             ApplyPatchTool(workspace),
             RenameFileTool(workspace),

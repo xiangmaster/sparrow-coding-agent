@@ -358,7 +358,7 @@ def test_agent_compacts_context_and_records_auditable_event(tmp_path: Path) -> N
     agent = Agent(
         provider,
         _real_registry(tmp_path),
-        settings=AgentSettings(max_context_characters=1_200),
+        settings=AgentSettings(max_context_characters=1_400),
         recorder=recorder,
     )
 
@@ -368,7 +368,7 @@ def test_agent_compacts_context_and_records_auditable_event(tmp_path: Path) -> N
     events = [event for event in recorder.events if event.event == "context_compacted"]
     assert events
     assert events[-1].data["total_compacted_turns"] >= 1
-    assert events[-1].data["estimated_characters"] <= 1_200
+    assert events[-1].data["estimated_characters"] <= 1_400
     final_request = provider.requests[-1].messages
     assert any(
         message.role is MessageRole.SYSTEM
@@ -455,6 +455,22 @@ def test_agent_stops_on_terminal_provider_error() -> None:
     assert "服务不可用" in result.final_text
 
 
+def test_agent_publishes_real_provider_text_deltas() -> None:
+    class StreamingProvider:
+        def complete_stream(self, messages, tools=(), *, on_text_delta):
+            on_text_delta("正在")
+            on_text_delta("检查。")
+            return _completion_response([], [])
+
+    recorder = MemoryRecorder()
+    result = Agent(StreamingProvider(), ToolRegistry(), recorder=recorder).run("任务")
+
+    assert result.stop_reason is StopReason.COMPLETED
+    deltas = [event for event in recorder.events if event.event == "model_delta"]
+    assert [event.data["text_delta"] for event in deltas] == ["正在", "检查。"]
+    assert all(event.data["attempt"] == 1 for event in deltas)
+
+
 def test_agent_honours_cancellation_before_first_provider_request() -> None:
     provider = ScriptedProvider([_completion_response([], [])])
     agent = Agent(provider, ToolRegistry(), is_cancelled=lambda: True)
@@ -497,6 +513,9 @@ def test_agent_stops_before_tools_when_token_budget_is_exceeded() -> None:
 
     assert result.stop_reason is StopReason.BUDGET_EXCEEDED
     assert "11" in result.final_text
+    assert "本轮尚未完成" in result.final_text
+    assert "尚未产生可确认的文件修改" in result.final_text
+    assert "安全停止" in result.final_text
 
 
 def test_agent_rejects_completion_mixed_with_other_tool_call() -> None:

@@ -1,4 +1,4 @@
-"""受工作区边界保护的目录创建、文件重命名与删除工具。"""
+"""受工作区边界保护的目录创建、文件创建、重命名与删除工具。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from typing import Any, Mapping
 from sparrow_agent.models import ToolResult
 from sparrow_agent.tools.base import ToolSpec
 from sparrow_agent.workspace import Workspace, WorkspacePathError
+
+_MAX_CREATED_FILE_BYTES = 1024 * 1024
 
 
 def _path_argument(arguments: Mapping[str, Any], name: str) -> str:
@@ -64,6 +66,79 @@ class CreateDirectoryTool:
         return ToolResult.success(
             f"已创建目录 {relative}",
             metadata={"created_directories": (relative,)},
+        )
+
+
+class CreateFileTool:
+    """以不覆盖目标的方式创建一个 UTF-8 文本文件。"""
+
+    spec = ToolSpec(
+        name="create_file",
+        description=(
+            "在工作区内新建 UTF-8 文本文件并一次写入完整内容，适合新增代码、测试或"
+            "文档。目标父目录必须存在，目标文件必须不存在；绝不覆盖已有文件。"
+            "新增文件优先使用本工具，无需手写 unified diff 行号，也不要先运行 touch。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "工作区相对文件路径"},
+                "content": {
+                    "type": "string",
+                    "description": "要写入文件的完整 UTF-8 文本内容",
+                },
+            },
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self, workspace: Workspace) -> None:
+        self._workspace = workspace
+
+    def execute(self, arguments: Mapping[str, Any]) -> ToolResult:
+        path = _path_argument(arguments, "path")
+        content = arguments.get("content")
+        if not isinstance(content, str):
+            raise TypeError("参数 content 必须是字符串")
+        encoded = content.encode("utf-8")
+        if len(encoded) > _MAX_CREATED_FILE_BYTES:
+            raise WorkspacePathError(
+                f"文件内容超过 {_MAX_CREATED_FILE_BYTES} 字节创建上限：{path}"
+            )
+
+        target = self._workspace.resolve_for_write(path)
+        if target.exists():
+            raise WorkspacePathError(f"创建目标已经存在：{path}")
+
+        descriptor: int | None = None
+        created = False
+        try:
+            descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            created = True
+            with os.fdopen(descriptor, "wb") as stream:
+                descriptor = None
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except FileExistsError as exc:
+            raise WorkspacePathError(f"创建目标已经存在：{path}") from exc
+        except OSError as exc:
+            if created:
+                target.unlink(missing_ok=True)
+            raise WorkspacePathError(f"无法安全创建文件：{path}：{exc}") from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+        relative = target.relative_to(self._workspace.root).as_posix()
+        return ToolResult.success(
+            f"已创建文件 {relative}",
+            metadata={
+                "changed_files": (relative,),
+                "created_file": relative,
+                "result_bytes": len(encoded),
+            },
         )
 
 

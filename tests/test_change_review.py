@@ -53,6 +53,28 @@ def test_capture_apply_patch_handles_new_file(tmp_path: Path) -> None:
     assert "+print('new')" in preview.diff
 
 
+def test_capture_create_file_shows_all_content_as_addition(tmp_path: Path) -> None:
+    workspace = Workspace(tmp_path)
+    capture = capture_change(
+        workspace,
+        ToolCall(
+            id="create",
+            name="create_file",
+            arguments={"path": "new.py", "content": "first\nsecond\n"},
+        ),
+    )
+    assert capture is not None
+    (tmp_path / "new.py").write_text("first\nsecond\n", encoding="utf-8")
+
+    preview = capture.finish(ToolResult.success("完成"))[0]
+
+    assert preview.path == "new.py"
+    assert "--- /dev/null" in preview.diff
+    assert "+first" in preview.diff
+    assert preview.added == 2
+    assert preview.removed == 0
+
+
 def test_capture_delete_and_failed_tool(tmp_path: Path) -> None:
     target = tmp_path / "old.txt"
     target.write_text("old\n", encoding="utf-8")

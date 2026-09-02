@@ -5,6 +5,7 @@ from sparrow_agent.tools.command import RunCommandTool
 from sparrow_agent.tools.filesystem import ListFilesTool, ReadFileTool, SearchFilesTool
 from sparrow_agent.tools.lifecycle import (
     CreateDirectoryTool,
+    CreateFileTool,
     DeleteFileTool,
     RenameFileTool,
 )
@@ -14,6 +15,7 @@ from sparrow_agent.tools.registry import ToolRegistry
 __all__ = [
     "ApplyPatchTool",
     "CreateDirectoryTool",
+    "CreateFileTool",
     "DeleteFileTool",
     "ListFilesTool",
     "ReadFileTool",

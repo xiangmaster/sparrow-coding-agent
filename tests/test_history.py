@@ -130,10 +130,23 @@ def test_load_history_run_preserves_apply_patch_and_marks_non_reconstructable_de
         recorder.record(
             "tool_result",
             {
+                "tool_name": "create_file",
+                "ok": True,
+                "arguments": {
+                    "arguments": {"path": "new.py", "content": "VALUE = 1\n"}
+                },
+                "metadata": {"workspace_changed_files": ["a.py", "new.py"]},
+            },
+        )
+        recorder.record(
+            "tool_result",
+            {
                 "tool_name": "delete_file",
                 "ok": True,
                 "arguments": {"arguments": {"path": "unused.py"}},
-                "metadata": {"workspace_changed_files": ["a.py", "unused.py"]},
+                "metadata": {
+                    "workspace_changed_files": ["a.py", "new.py", "unused.py"]
+                },
             },
         )
         recorder.record("run_finished", {"stop_reason": "cancelled", "iterations": 1})
@@ -142,7 +155,10 @@ def test_load_history_run_preserves_apply_patch_and_marks_non_reconstructable_de
     run = load_history_run(tmp_path, path)
 
     assert run.previews[0].text.startswith("--- a/a.py")
-    assert "未保存被删除文件的完整内容" in run.previews[1].text
+    assert run.previews[1].title == "new.py"
+    assert "+++ b/new.py" in run.previews[1].text
+    assert "+VALUE = 1" in run.previews[1].text
+    assert "未保存被删除文件的完整内容" in run.previews[2].text
 
 
 def test_non_completed_trace_cannot_claim_completion_gate_passed(tmp_path: Path) -> None:

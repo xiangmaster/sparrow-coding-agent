@@ -22,7 +22,14 @@ from sparrow_agent.models import (  # noqa: E402
     StopReason,
     ToolCall,
 )
-from sparrow_agent.conversation import ConversationConfig, ConversationSession  # noqa: E402
+from sparrow_agent.conversation import (  # noqa: E402
+    ConversationConfig,
+    ConversationSession,
+    ConversationStore,
+    ConversationThread,
+    ConversationTurn,
+    TurnStatus,
+)
 from sparrow_agent.provider import ModelResponse, ScriptedProvider  # noqa: E402
 from sparrow_agent.qml_app import (  # noqa: E402
     build_qml_application,
@@ -318,6 +325,83 @@ def test_qml_controller_runs_session_in_worker_and_collects_events(tmp_path: Pat
     ]
     assert controller.conversationMessages[0]["text"] == "检查项目"
     dispose_qml_application(app, engine)
+
+
+def test_qml_controller_merges_stream_deltas_into_one_assistant_message(
+    tmp_path: Path,
+) -> None:
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
+    controller._conversation_messages = [
+        {"kind": "user", "title": "你", "text": "检查", "tone": "neutral"}
+    ]
+
+    controller._on_event(
+        SessionEvent(1, "model_delta", {"iteration": 1, "text_delta": "我正在"})
+    )
+    controller._on_event(
+        SessionEvent(2, "model_delta", {"iteration": 1, "text_delta": "检查项目。"})
+    )
+
+    assert controller.isStreaming is True
+    assert len(controller.events) == 0
+    assert controller.conversationMessages[-1]["text"] == "我正在检查项目。"
+    assert controller.conversationMessages[-1]["streaming"] is True
+
+    controller._on_event(
+        SessionEvent(
+            3,
+            "model_response",
+            {"iteration": 1, "tool_call_count": 1, "usage": {"total_tokens": 8}},
+        )
+    )
+
+    assert controller.isStreaming is False
+    assert controller.conversationMessages[-1]["streaming"] is False
+    assert len(controller.events) == 1
+
+    controller._on_completed(
+        AgentResult(
+            stop_reason=StopReason.COMPLETED,
+            final_text="我正在检查项目。",
+            iterations=1,
+            completion_request=CompletionRequest(summary="我正在检查项目。"),
+        )
+    )
+
+    assert len(controller.conversationMessages) == 2
+    assert controller.conversationMessages[-1]["tone"] == "success"
+
+
+def test_qml_controller_deduplicates_running_turn_trace_from_sidebar(
+    tmp_path: Path,
+) -> None:
+    turn_id = "turn-running"
+    moment = "2026-09-02T08:00:00+00:00"
+    ConversationStore(tmp_path).save(
+        ConversationThread(
+            id="thread-running",
+            title="检查项目",
+            workspace=str(tmp_path),
+            created_at=moment,
+            updated_at=moment,
+            turns=(
+                ConversationTurn(
+                    id=turn_id,
+                    user_message="检查项目",
+                    status=TurnStatus.RUNNING,
+                    created_at=moment,
+                ),
+            ),
+        )
+    )
+    with RunRecorder(tmp_path, run_id=turn_id) as recorder:
+        recorder.record("run_started", {"task": "检查项目"})
+
+    controller = DesktopController(tmp_path, config_directory=tmp_path)
+
+    assert len(controller.history) == 1
+    assert controller.history[0]["runId"] == "thread-running"
+    assert controller.history[0]["stateKey"] == "running"
 
 
 @pytest.mark.gui_smoke
@@ -625,6 +709,7 @@ def test_qml_diff_lines_expose_line_numbers_and_visual_kinds() -> None:
         ("list_files", "inspect", "检查"),
         ("search_files", "inspect", "检查"),
         ("read_file", "read", "读取"),
+        ("create_file", "edit", "修改"),
         ("apply_patch", "edit", "修改"),
         ("run_command", "command", "命令"),
         ("request_completion", "gate", "审查"),

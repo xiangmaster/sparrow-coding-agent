@@ -14,7 +14,7 @@ from sparrow_agent.recording import RecordedEvent, RecordingError, read_trace
 _MAX_HISTORY_ITEMS = 100
 _MAX_HISTORY_PROBE_BYTES = 2 * 1024 * 1024
 _MUTATION_TOOLS = frozenset(
-    {"apply_patch", "replace_text", "rename_file", "delete_file"}
+    {"apply_patch", "create_file", "replace_text", "rename_file", "delete_file"}
 )
 
 
@@ -223,6 +223,18 @@ def _change_preview(event: RecordedEvent) -> ChangePreview | None:
         patch = arguments.get("patch")
         if isinstance(patch, str) and patch.strip():
             return ChangePreview("统一差异补丁", patch.rstrip())
+    if tool_name == "create_file":
+        path = arguments.get("path")
+        content = arguments.get("content")
+        if isinstance(path, str) and isinstance(content, str):
+            diff = difflib.unified_diff(
+                (),
+                content.splitlines(keepends=True),
+                fromfile="/dev/null",
+                tofile=f"b/{path}",
+            )
+            text = "".join(diff).rstrip()
+            return ChangePreview(path, text or "已创建空文件")
     if tool_name == "replace_text":
         path = arguments.get("path")
         old = arguments.get("old_text")

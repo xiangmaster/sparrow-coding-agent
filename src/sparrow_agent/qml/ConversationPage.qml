@@ -121,8 +121,8 @@ Item {
             onCountChanged: positionViewAtEnd()
             footer: Item {
                 width: conversationList.width
-                height: backend.isBusy ? 54 : 0
-                visible: backend.isBusy
+                height: backend.isBusy && !backend.isStreaming ? 54 : 0
+                visible: backend.isBusy && !backend.isStreaming
                 Rectangle {
                     anchors.left: parent.left
                     anchors.leftMargin: 8
@@ -260,7 +260,7 @@ Item {
                             Text {
                                 Layout.fillWidth: true
                                 visible: text.length > 0
-                                text: modelData.text
+                                text: modelData.text + (modelData.streaming ? "  ▋" : "")
                                 color: messageDelegate.isTool ? page.textSecondary : page.textPrimary
                                 font.pixelSize: messageDelegate.isTool ? 10 : 14
                                 wrapMode: Text.Wrap

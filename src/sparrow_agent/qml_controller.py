@@ -30,6 +30,7 @@ _TOOL_LABELS = {
     "read_file": "阅读文件",
     "search_files": "搜索代码",
     "create_directory": "创建目录",
+    "create_file": "创建文件",
     "replace_text": "精确修改",
     "apply_patch": "应用代码补丁",
     "rename_file": "重命名文件",
@@ -38,7 +39,14 @@ _TOOL_LABELS = {
     "request_completion": "提交完成申请",
 }
 _MUTATION_TOOLS = frozenset(
-    {"create_directory", "replace_text", "apply_patch", "rename_file", "delete_file"}
+    {
+        "create_directory",
+        "create_file",
+        "replace_text",
+        "apply_patch",
+        "rename_file",
+        "delete_file",
+    }
 )
 
 
@@ -126,6 +134,7 @@ class DesktopController(QObject):
         self._total_tokens = 0
         self._token_budget = 400_000
         self._phase = 0
+        self._streaming_message_index: int | None = None
         self._session_factory = session_factory
         self._session: _RunnableSession | None = None
         self._thread: QThread | None = None
@@ -224,6 +233,10 @@ class DesktopController(QObject):
     def phase(self) -> int:
         return self._phase
 
+    @Property(bool, notify=contentChanged)
+    def isStreaming(self) -> bool:
+        return self._streaming_message_index is not None
+
     @Slot(str)
     def setWorkspace(self, value: str) -> None:
         if self._thread is not None:
@@ -246,6 +259,11 @@ class DesktopController(QObject):
     @Slot()
     def refresh_history(self) -> None:
         threads = ConversationStore(self._workspace).discover()
+        recorded_turn_ids = {
+            turn.id
+            for thread in threads
+            for turn in thread.turns
+        }
         recorded_turn_paths = {
             (self._workspace / turn.trace_path).resolve()
             for thread in threads
@@ -255,7 +273,8 @@ class DesktopController(QObject):
         runs = tuple(
             entry
             for entry in discover_history(self._workspace)
-            if entry.trace_path.resolve() not in recorded_turn_paths
+            if entry.run_id not in recorded_turn_ids
+            and entry.trace_path.resolve() not in recorded_turn_paths
         )
         self._history_refs = [
             *(("thread", thread.id) for thread in threads),
@@ -308,7 +327,10 @@ class DesktopController(QObject):
         self._session = None
         self._current_thread_id = ""
 
-        recorded_events = run.events[:_MAX_DISPLAYED_EVENTS]
+        visible_events = tuple(
+            event for event in run.events if event.event != "model_delta"
+        )
+        recorded_events = visible_events[:_MAX_DISPLAYED_EVENTS]
         self._events = [_present_recorded_event(event) for event in recorded_events]
         self._conversation_messages = [
             {"kind": "user", "text": run.task, "title": "你", "tone": "neutral"},
@@ -319,7 +341,7 @@ class DesktopController(QObject):
                 "tone": "success" if run.stop_reason == "completed" else "error",
             },
         ]
-        hidden = len(run.events) - len(recorded_events)
+        hidden = len(visible_events) - len(recorded_events)
         if hidden:
             self._events.append(
                 {
@@ -429,7 +451,10 @@ class DesktopController(QObject):
                     run = None
                 if run is not None:
                     for event in run.events:
-                        if len(events) < _MAX_DISPLAYED_EVENTS:
+                        if (
+                            event.event != "model_delta"
+                            and len(events) < _MAX_DISPLAYED_EVENTS
+                        ):
                             events.append(_present_recorded_event(event))
                         if event.event == "tool_result":
                             presented = _present_recorded_event(event)
@@ -501,6 +526,7 @@ class DesktopController(QObject):
         self._iterations = 0
         self._total_tokens = 0
         self._phase = 0
+        self._streaming_message_index = None
         self._set_state("idle", "就绪")
         self.contentChanged.emit()
         self.refresh_history()
@@ -595,6 +621,7 @@ class DesktopController(QObject):
         self._trace_path = ""
         self._iterations = 0
         self._phase = 0
+        self._streaming_message_index = None
         self._set_state("running", "正在运行")
         self.contentChanged.emit()
         self._thread.start()
@@ -613,7 +640,7 @@ class DesktopController(QObject):
 
     @Slot(object)
     def _on_event(self, event: SessionEvent) -> None:
-        if len(self._events) < _MAX_DISPLAYED_EVENTS:
+        if event.event != "model_delta" and len(self._events) < _MAX_DISPLAYED_EVENTS:
             self._events.append(_present_session_event(event))
         data = event.data
         if event.event == "run_started":
@@ -621,7 +648,10 @@ class DesktopController(QObject):
             if self._session is not None and self._session.trace_path is not None:
                 self._trace_path = str(self._session.trace_path)
             self.refresh_history()
+        elif event.event == "model_delta":
+            self._consume_model_delta(data)
         elif event.event == "model_response":
+            self._finish_streaming_message()
             self._iterations = max(self._iterations, _plain_int(data.get("iteration")))
             usage = data.get("usage")
             if isinstance(usage, Mapping):
@@ -661,6 +691,7 @@ class DesktopController(QObject):
 
     @Slot(object)
     def _on_completed(self, result: AgentResult) -> None:
+        self._finish_streaming_message()
         self._iterations = result.iterations
         if result.stop_reason is StopReason.COMPLETED:
             self._phase = 4
@@ -673,19 +704,33 @@ class DesktopController(QObject):
             f"{_stop_reason_text(result.stop_reason.value)} · {result.iterations} 轮 · "
             f"{self._total_tokens:,} / {self._token_budget:,} Tokens"
         )
-        self._conversation_messages.append(
-            {
-                "kind": "assistant",
-                "title": "Sparrow",
-                "text": result.final_text,
-                "tone": "success" if result.stop_reason is StopReason.COMPLETED else "error",
-            }
-        )
+        tone = "success" if result.stop_reason is StopReason.COMPLETED else "error"
+        last = self._conversation_messages[-1] if self._conversation_messages else None
+        if (
+            isinstance(last, Mapping)
+            and last.get("kind") == "assistant"
+            and str(last.get("text", "")).strip() == result.final_text.strip()
+        ):
+            updated = dict(last)
+            updated["tone"] = tone
+            updated["streaming"] = False
+            self._conversation_messages[-1] = updated
+        else:
+            self._conversation_messages.append(
+                {
+                    "kind": "assistant",
+                    "title": "Sparrow",
+                    "text": result.final_text,
+                    "tone": tone,
+                    "streaming": False,
+                }
+            )
         self.contentChanged.emit()
         self.refresh_history()
 
     @Slot(str)
     def _on_failed(self, message: str) -> None:
+        self._finish_streaming_message()
         self._set_state("error", "运行失败")
         self._gate_text = message
         self._status_text = "运行失败"
@@ -725,6 +770,36 @@ class DesktopController(QObject):
             self._verification_text = (
                 f"{mark} {' '.join(map(str, command))}\n退出码 {exit_code}"
             )
+
+    def _consume_model_delta(self, data: Mapping[str, Any]) -> None:
+        delta = data.get("text_delta")
+        if not isinstance(delta, str) or not delta:
+            return
+        index = self._streaming_message_index
+        if index is None or not 0 <= index < len(self._conversation_messages):
+            self._conversation_messages.append(
+                {
+                    "kind": "assistant",
+                    "title": "Sparrow",
+                    "text": delta,
+                    "tone": "neutral",
+                    "streaming": True,
+                }
+            )
+            self._streaming_message_index = len(self._conversation_messages) - 1
+            return
+        current = dict(self._conversation_messages[index])
+        current["text"] = str(current.get("text", "")) + delta
+        current["streaming"] = True
+        self._conversation_messages[index] = current
+
+    def _finish_streaming_message(self) -> None:
+        index = self._streaming_message_index
+        if index is not None and 0 <= index < len(self._conversation_messages):
+            current = dict(self._conversation_messages[index])
+            current["streaming"] = False
+            self._conversation_messages[index] = current
+        self._streaming_message_index = None
 
     def _consume_run_finished(self, data: Mapping[str, Any]) -> None:
         completion = data.get("completion_request")

@@ -73,9 +73,10 @@ def test_run_command_assembles_all_components_and_writes_replayable_trace(
     assert "[工具] request_completion：成功" in output.err
     assert captured_settings[0].model == "deepseek-v4-flash"
     assert provider.requests[0].messages[1].content == "解释 项目状态"
-    assert len(provider.requests[0].tools) == 10
+    assert len(provider.requests[0].tools) == 11
     assert provider.requests[0].tools[3]["function"]["name"] == "create_directory"
-    assert provider.requests[0].tools[4]["function"]["name"] == "replace_text"
+    assert provider.requests[0].tools[4]["function"]["name"] == "create_file"
+    assert provider.requests[0].tools[5]["function"]["name"] == "replace_text"
 
     traces = list((tmp_path / ".sparrow" / "runs").glob("*.jsonl"))
     assert len(traces) == 1

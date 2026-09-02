@@ -97,6 +97,9 @@ def capture_change(workspace: Workspace | None, call: ToolCall) -> ChangeCapture
 
 def _target_pairs(call: ToolCall) -> tuple[tuple[str | None, str | None], ...]:
     arguments = call.arguments
+    if call.name == "create_file":
+        path = arguments.get("path")
+        return ((None, path),) if isinstance(path, str) else ()
     if call.name == "replace_text":
         path = arguments.get("path")
         return ((path, path),) if isinstance(path, str) else ()

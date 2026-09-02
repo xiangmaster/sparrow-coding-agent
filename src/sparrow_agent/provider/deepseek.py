@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
@@ -97,6 +98,53 @@ class DeepSeekProvider:
     ) -> ModelResponse:
         if not messages:
             raise ValueError("模型请求至少需要一条消息")
+        request = self._request_payload(messages, tools)
+
+        try:
+            response = self._client.chat.completions.create(**request)
+        except openai.APIError as exc:
+            raise ProviderRequestError(
+                _safe_api_error_message(exc), retryable=_is_retryable(exc)
+            ) from exc
+        except Exception as exc:
+            raise ProviderRequestError(
+                f"模型客户端异常：{type(exc).__name__}: {exc}", retryable=False
+            ) from exc
+        return _response_from_api(response)
+
+    def complete_stream(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[Mapping[str, Any]] = (),
+        *,
+        on_text_delta: Callable[[str], None],
+    ) -> ModelResponse:
+        """使用 DeepSeek SSE 流，并在保留完整响应的同时推送可见文本增量。"""
+
+        request = self._request_payload(messages, tools)
+        request["stream"] = True
+        request["stream_options"] = {"include_usage": True}
+        try:
+            chunks = self._client.chat.completions.create(**request)
+            return _response_from_stream(chunks, on_text_delta)
+        except openai.APIError as exc:
+            raise ProviderRequestError(
+                _safe_api_error_message(exc), retryable=_is_retryable(exc)
+            ) from exc
+        except ProviderProtocolError:
+            raise
+        except Exception as exc:
+            raise ProviderRequestError(
+                f"模型客户端异常：{type(exc).__name__}: {exc}", retryable=False
+            ) from exc
+
+    def _request_payload(
+        self,
+        messages: Sequence[Message],
+        tools: Sequence[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        if not messages:
+            raise ValueError("模型请求至少需要一条消息")
         try:
             api_messages = [_message_to_api(message) for message in messages]
         except (TypeError, ValueError) as exc:
@@ -111,18 +159,7 @@ class DeepSeekProvider:
         if tools:
             request["tools"] = list(tools)
             request["tool_choice"] = "auto"
-
-        try:
-            response = self._client.chat.completions.create(**request)
-        except openai.APIError as exc:
-            raise ProviderRequestError(
-                _safe_api_error_message(exc), retryable=_is_retryable(exc)
-            ) from exc
-        except Exception as exc:
-            raise ProviderRequestError(
-                f"模型客户端异常：{type(exc).__name__}: {exc}", retryable=False
-            ) from exc
-        return _response_from_api(response)
+        return request
 
 
 def _message_to_api(message: Message) -> dict[str, Any]:
@@ -196,6 +233,91 @@ def _response_from_api(response: Any) -> ModelResponse:
     )
 
 
+def _response_from_stream(
+    chunks: Any, on_text_delta: Callable[[str], None]
+) -> ModelResponse:
+    content_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_parts: dict[int, dict[str, str]] = {}
+    finish_reason: str | None = None
+    usage: Any = None
+    model: str | None = None
+    response_id: str | None = None
+    saw_choice = False
+
+    for chunk in chunks:
+        model = getattr(chunk, "model", None) or model
+        response_id = getattr(chunk, "id", None) or response_id
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+        choices = getattr(chunk, "choices", None) or ()
+        if not choices:
+            continue
+        saw_choice = True
+        choice = choices[0]
+        finish_reason = getattr(choice, "finish_reason", None) or finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+
+        content = getattr(delta, "content", None)
+        if isinstance(content, str) and content:
+            content_parts.append(content)
+            on_text_delta(content)
+        reasoning = getattr(delta, "reasoning_content", None)
+        if isinstance(reasoning, str) and reasoning:
+            reasoning_parts.append(reasoning)
+
+        for fallback_index, api_call in enumerate(
+            getattr(delta, "tool_calls", None) or ()
+        ):
+            raw_index = getattr(api_call, "index", fallback_index)
+            index = raw_index if isinstance(raw_index, int) else fallback_index
+            item = tool_parts.setdefault(
+                index, {"id": "", "name": "", "arguments": ""}
+            )
+            call_id = getattr(api_call, "id", None)
+            if isinstance(call_id, str) and call_id:
+                item["id"] = call_id
+            function = getattr(api_call, "function", None)
+            name = getattr(function, "name", None) if function is not None else None
+            arguments = (
+                getattr(function, "arguments", None)
+                if function is not None
+                else None
+            )
+            if isinstance(name, str):
+                item["name"] += name
+            if isinstance(arguments, str):
+                item["arguments"] += arguments
+
+    if not saw_choice:
+        raise ProviderProtocolError("DeepSeek 流式响应中没有 choices")
+    tool_calls = tuple(
+        _tool_call_from_values(item["id"], item["name"], item["arguments"])
+        for _, item in sorted(tool_parts.items())
+    )
+    content = "".join(content_parts) or None
+    reasoning_content = "".join(reasoning_parts) or None
+    try:
+        message = Message(
+            role=MessageRole.ASSISTANT,
+            content=content,
+            tool_calls=tool_calls,
+            reasoning_content=reasoning_content,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ProviderProtocolError(f"DeepSeek assistant message 无效：{exc}") from exc
+    return ModelResponse(
+        message=message,
+        finish_reason=finish_reason,
+        usage=_usage_from_api(usage),
+        model=model,
+        response_id=response_id,
+    )
+
+
 def _tool_call_from_api(api_call: Any) -> ToolCall:
     call_type = getattr(api_call, "type", None)
     if call_type not in (None, "function"):
@@ -206,6 +328,10 @@ def _tool_call_from_api(api_call: Any) -> ToolCall:
     raw_arguments = (
         getattr(function, "arguments", None) if function is not None else None
     )
+    return _tool_call_from_values(call_id, name, raw_arguments)
+
+
+def _tool_call_from_values(call_id: Any, name: Any, raw_arguments: Any) -> ToolCall:
     if not isinstance(call_id, str) or not isinstance(name, str):
         raise ProviderProtocolError("DeepSeek 工具调用缺少 id 或函数名称")
     if not isinstance(raw_arguments, str):

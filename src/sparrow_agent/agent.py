@@ -25,9 +25,13 @@ from sparrow_agent.workspace import Workspace
 
 DEFAULT_SYSTEM_PROMPT = """你是 Sparrow，一个在本地工具边界内工作的编程智能体。
 先检查项目再修改；每次工具失败后根据观察调整，不要假装操作成功。
-小范围修改优先使用 replace_text；新增文件或多文件修改可使用 apply_patch。
+小范围修改优先使用 replace_text；新增完整文件优先使用 create_file，不要先运行 touch；
+需要原子修改多个文件时使用 apply_patch，并严格遵循工具说明中的 unified diff 格式。
+每轮调用工具时，在可见 content 中用简洁中文说明当前动作及依据，不要只写在 reasoning；
 修改代码后必须运行合适的验证。只有任务确实完成时，才能调用 request_completion；
-自然语言结论不会结束任务，完成申请必须如实列出修改文件、成功验证命令和剩余风险。"""
+自然语言结论不会结束任务。完成申请的 summary 必须使用中文面向用户说明完成内容、
+关键原因或设计决策、验证结论和剩余风险，不能只写“已完成”；调用完成申请时，
+可见 content 应原样输出同一份 summary，其余字段也必须如实。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,9 +182,11 @@ class Agent:
                 return self._finish(
                     AgentResult(
                         stop_reason=StopReason.BUDGET_EXCEEDED,
-                        final_text=(
-                            f"累计 Token 用量 {total_tokens} 超过预算 "
-                            f"{self._settings.max_total_tokens}"
+                        final_text=_budget_exceeded_text(
+                            total_tokens,
+                            self._settings.max_total_tokens,
+                            evidence,
+                            last_visible_text,
                         ),
                         iterations=iteration,
                     )
@@ -326,7 +332,6 @@ class Agent:
                 iterations=self._settings.max_iterations,
             )
         )
-
     def _request_model(
         self, context: Context, iteration: int
     ) -> ModelResponse | ProviderError:
@@ -350,6 +355,20 @@ class Agent:
             self._reported_compacted_turns = context.compacted_turns
         for attempt in range(self._settings.provider_retries + 1):
             try:
+                complete_stream = getattr(self._provider, "complete_stream", None)
+                if callable(complete_stream):
+                    return complete_stream(
+                        messages,
+                        self._model_tools,
+                        on_text_delta=lambda delta: self._recorder.record(
+                            "model_delta",
+                            {
+                                "iteration": iteration,
+                                "attempt": attempt + 1,
+                                "text_delta": delta,
+                            },
+                        ),
+                    )
                 return self._provider.complete(messages, self._model_tools)
             except ProviderRequestError as exc:
                 if not exc.retryable or attempt == self._settings.provider_retries:
@@ -435,6 +454,44 @@ class Agent:
             },
         )
         return result
+
+
+def _budget_exceeded_text(
+    total_tokens: int,
+    token_budget: int,
+    evidence: EvidenceLedger,
+    last_visible_text: str,
+) -> str:
+    """用可核验现场生成有行动结论的预算终止回复。"""
+
+    changed = sorted(evidence.changed_files)
+    if changed:
+        work = f"已修改 {len(changed)} 个文件：" + "、".join(changed)
+    else:
+        work = "尚未产生可确认的文件修改"
+
+    verifications = evidence.verifications_after_last_mutation()
+    if verifications:
+        latest = verifications[-1]
+        mark = "通过" if latest.exit_code == 0 else f"失败（退出码 {latest.exit_code}）"
+        verification = f"最近验证：{' '.join(latest.command)}，结果{mark}"
+    elif changed:
+        verification = "修改后尚未取得成功验证证据"
+    else:
+        verification = "尚未运行需要记录的验证命令"
+
+    visible = (
+        f"\n\n模型最后说明：{last_visible_text.strip()}"
+        if last_visible_text.strip()
+        else ""
+    )
+    return (
+        "本轮尚未完成，Sparrow 已在执行下一步操作前安全停止。\n\n"
+        f"当前进展：{work}；{verification}。"
+        f"{visible}\n\n"
+        f"停止原因：累计 Token 用量 {total_tokens:,} 超过预算 {token_budget:,}。"
+        "现有修改与运行轨迹均已保留，可提高任务累计 Token 预算后在同一会话继续。"
+    )
 
 
 def _with_workspace_evidence(
